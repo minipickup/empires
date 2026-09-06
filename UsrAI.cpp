@@ -80,7 +80,7 @@ static int wheelResearchTimer = 0;
 static bool wheelUnlocked = false;
 static bool logisticsResearching=false;
 //--------------------发动总攻--------------------
-static int allOut_time=25000;
+static int allOut_time=30000;
 static int diri[8]={1,1,0,-1,-1,-1,0,1};
 static int dirj[8]={0,1,1,1,0,-1,-1,-1};
 static int ddr[4]={1,0,-1,0};
@@ -91,6 +91,7 @@ static bool allOut_started=false;         // =allOut:总攻开始后停用旧响
 static bool allOut_campFounded=false;     // 已发现敌方营地/主力位置
 static int allOut_campDR=-1;
 static int allOut_campUR=-1;
+static int allOut_campSN=-1;
 //--------------------小小功能--------------------
 int getBuildingSize(int type) {
     switch (type) {
@@ -230,27 +231,26 @@ void UsrAI::processData()
                     if (dD < cBest) { cBest = dD; cSN = f.SN; cDR = f.BlockDR; cUR = f.BlockUR; }
                 }
                 if (cSN != -1) {
-    wantConvert = true;
-    goHome = false;                       // 掐掉回家念头
-    // 施法保护:正在招降动作中绝不再发指令,免得被打断原地重来
-    bool converting = (priestState == HUMAN_STATE_ATTACKING
-                    || priestState == HUMAN_STATE_WORKING);
-    if (!converting) {
-        priestConvertTimer++;             // 统一节流:祭司每25帧最多下一条指令
-        if (cBest <= DIS_PRIEST * BLOCKSIDELENGTH) {
-            if (priestConvertTimer % 25 == 2) {
-                HumanAction(priestSN, cSN);   // 射程内招降同样25帧一次,不刷屏
-            }
-        }
-        else {
-            // 射程外:打断逃跑/回家,直接追过去再招降(移动每25帧发一次)
-            if (priestConvertTimer % 25 == 0) {
-                HumanMove(priestSN, cDR * BLOCKSIDELENGTH,
-                                 cUR * BLOCKSIDELENGTH);
-            }
-        }
-    }
-}
+                    wantConvert = true;
+                    goHome = false;                       // 掐掉回家念头
+                    // 施法保护:正在招降动作中绝不再发指令,免得被打断原地重来
+                    bool converting = (priestState == HUMAN_STATE_ATTACKING
+                        || priestState == HUMAN_STATE_WORKING);
+                if (!converting) {
+                    priestConvertTimer++;             // 统一节流:祭司每25帧最多下一条指令
+                    if (cBest <= DIS_PRIEST * BLOCKSIDELENGTH) {
+                        if (priestConvertTimer % 25 == 2) {
+                            HumanAction(priestSN, cSN);   // 射程内招降同样25帧一次,不刷屏
+                        }
+                    }
+                else {
+                    // 射程外:打断逃跑/回家,直接追过去再招降(移动每25帧发一次)
+                    if (priestConvertTimer % 25 == 0) {
+                        HumanMove(priestSN, cDR * BLOCKSIDELENGTH,cUR * BLOCKSIDELENGTH);
+                    }
+                }
+                }
+                }
             }
             // ---------- 招降没戏(冷却中/没目标)才轮到逃跑/回家兜底 ----------
             if (!wantConvert) {
@@ -362,7 +362,7 @@ void UsrAI::processData()
         for (tagBuilding& b : info.buildings) {
             if (b.Type != BUILDING_ARROWTOWER)continue;
             towerAutoAttack(b.SN, b.BlockDR, b.BlockUR, b.Project);
-    }
+        }
     
         if(1){
         // ---- 最高优先:正在攻击/锁定祭司的敌人 → 所有空闲兵立刻集火 ----
@@ -370,7 +370,7 @@ void UsrAI::processData()
                 if (enemy.WorkObjectSN == priestSN) {      // 该敌人当前在打祭司
                     for (tagArmy& army : info.armies) {
                         if (army.SN == priestSN) continue;
-                        if (army.NowState != HUMAN_STATE_IDLE) continue;
+                        if (army.NowState != HUMAN_STATE_IDLE)continue;
                         HumanAction(army.SN, enemy.SN);
                     }
                 }
@@ -636,7 +636,10 @@ void UsrAI::processData()
                     dest={f.first,f.second};
                 }
             }
-            if(dest.first==-1)dest={baseBlockDR-1,baseBlockUR-1};
+            if(dest.first==-1){
+                dest={baseBlockDR-1,baseBlockUR-1};
+                DebugText("俺找不到边界,只能往家走了...");
+            }
             HumanMove(army.SN,dest.first*BLOCKSIDELENGTH,dest.second*BLOCKSIDELENGTH);
         };
         auto allOut_escape=[&](tagArmy& army){
@@ -650,7 +653,7 @@ void UsrAI::processData()
             for (int dr = startDR; dr <= endDR; dr++) {
                 for (int ur = startUR; ur <= endUR; ur++) {
                     double score = 0;
-                    if (!reachable[dr][ur])continue;
+                    if (curMap[dr][ur]!=0)continue;
                     for (tagArmy& enemy : info.enemy_armies) {
                         double dToEnemy = calDistance(army.DR, army.UR, enemy.DR, enemy.UR);
                         if (dToEnemy > 5 * BLOCKSIDELENGTH)continue;
@@ -671,7 +674,6 @@ void UsrAI::processData()
             int locked=-1;
             auto it=allOut_rangedLock.find(army.SN);
             if(it!=allOut_rangedLock.end())locked=it->second;
-
             bool valid=false;
             if(locked!=-1){
                 for(tagArmy& e:info.enemy_armies){
@@ -682,14 +684,30 @@ void UsrAI::processData()
                     }
                 }
             }
-
+            bool isRanged=true;
+            switch (army.Sort)
+            {
+                case AT_CLUBMAN:
+                case AT_SCOUT:
+                case AT_SWORDSMAN:
+                case AT_CAVALRY:
+                case AT_HOPLITE:
+                case AT_CHARIOT:
+                case AT_BROADSWORDSMAN:
+                isRanged=false;
+                break;
+                default:
+                break;
+            }
             bool danger=false;
-            for(tagArmy& e:info.enemy_armies){
-                double d=calDistance(army.DR,army.UR,e.DR,e.UR);
-                if(d<=2*BLOCKSIDELENGTH){
-                    danger=true;
-                    if(army.NowState!=HUMAN_STATE_WALKING)allOut_escape(army);
-                    break;
+            if(isRanged){
+                for(tagArmy& e:info.enemy_armies){
+                    double d=calDistance(army.DR,army.UR,e.DR,e.UR);
+                    if(d<=2*BLOCKSIDELENGTH){
+                        danger=true;
+                        if(army.NowState!=HUMAN_STATE_WALKING)allOut_escape(army);
+                        break;
+                    }
                 }
             }
 
@@ -710,10 +728,46 @@ void UsrAI::processData()
         
         if(timer>=allOut_time&&!allOut_started)allOut_started=true;
 
-        if(allOut_started&&timer%25==0){
+        if(allOut_started&&timer%19==0){
             scanMap();
-            for(tagArmy& army : info.armies){
-                allOut_go(army);
+            if(!allOut_campFounded){
+                for(tagArmy& a : info.armies){
+                    allOut_go(a);
+                }
+                for(tagBuilding& b:info.enemy_buildings){
+                    if(b.Type!=BUILDING_SIEGE)continue;
+                    allOut_campFounded=true;
+                    allOut_campDR=b.BlockDR;
+                    allOut_campUR=b.BlockUR;
+                    allOut_campSN=b.SN;
+                    DebugText("敌人基地找到啦,快撤出去!!!");
+                    for(tagArmy& a:info.armies){
+                        HumanMove(a.SN,baseBlockDR*BLOCKSIDELENGTH,baseBlockUR*BLOCKSIDELENGTH);
+                    }
+                }
+            }else{
+                for(tagArmy& a:info.armies){
+                    if(info.enemy_armies.empty()){
+                        bool enemyArrowTowerExist=false;
+                        for(tagBuilding& b:info.enemy_buildings){
+                            if(b.Type==BUILDING_ARROWTOWER){
+                                HumanAction(a.SN,b.SN);
+                                enemyArrowTowerExist=true;
+                            }
+                        }
+                        if(!enemyArrowTowerExist){
+                            HumanMove(a.SN,allOut_campDR*BLOCKSIDELENGTH,allOut_campUR*BLOCKSIDELENGTH);
+                        }
+                    }
+                    else{
+                        if(a.Sort==AT_PRIEST&&priestState==HUMAN_STATE_IDLE)continue;
+                        //战车弓兵的攻击间隔是1.5秒,即37.5帧
+                        if(a.Sort==AT_CHARIOT_ARCHER&&timer%38!=0)continue;
+                        //5秒,125帧
+                        if(a.Sirt==AT_STONE_THROWER&&timer%133!=0)continue;
+                        smartAttack(a);
+                    }
+                }
             }
         }
     }
