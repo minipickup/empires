@@ -389,12 +389,24 @@ void UsrAI::processData()
             }
             // ---- 第二优先级:祭司周围安全了,才分兵守家(敌人靠近家 30 格) ----
             if (!priestThreatened) {
-                for (tagArmy& enemy : info.enemy_armies) {
-                    if (abs(enemy.BlockDR - baseBlockDR) + abs(enemy.BlockUR - baseBlockUR) < 30) {
-                        for (tagArmy& army : info.armies) {
-                            if (army.SN == priestSN)continue;
-                            if (army.NowState != HUMAN_STATE_IDLE)continue;
-                            HumanAction(army.SN, enemy.SN);
+                bool hasStoneThrower=false;
+                for(tagArmy& e:info.enemy_armies){
+                    if(e.Sort==AT_STONE_THROWER){
+                        for (tagArmy& a : info.armies) {
+                            if (a.SN == priestSN)continue;
+                            if (a.NowState != HUMAN_STATE_IDLE)continue;
+                            HumanAction(a.SN, e.SN);
+                        }
+                    }
+                }
+                if(!hasStoneThrower){
+                    for (tagArmy& enemy : info.enemy_armies) {
+                        if (abs(enemy.BlockDR - baseBlockDR) + abs(enemy.BlockUR - baseBlockUR) < 30) {
+                            for (tagArmy& army : info.armies) {
+                                if (army.SN == priestSN)continue;
+                                if (army.NowState != HUMAN_STATE_IDLE)continue;
+                                HumanAction(army.SN, enemy.SN);
+                            }
                         }
                     }
                 }
@@ -607,8 +619,21 @@ void UsrAI::processData()
         set<pair<int,int>>frontier;
         auto scanMap=[&](){
             queue<pair<int,int>>q;
-            reachable[baseBlockDR][baseBlockUR]=true;
-            q.push({baseBlockDR,baseBlockUR});
+            //不能直接用基地坐标,否则出不去
+            int startDR=baseBlockDR,startUR=baseBlockUR;
+            bool started=false;
+            for(int dr=baseBlockDR-10;dr<baseBlockDR+10&&!started;dr++){
+                for(int ur=baseBlockUR-10;ur<baseBlockUR+10;ur++){
+                    if(dr>=0&&dr<100&&ur>=0&&ur<100&&curMap[dr][ur]==0){
+                        startDR=dr;
+                        startUR=ur;
+                        started=true;
+                        break;
+                    }
+                }
+            }
+            reachable[startDR][startUR]=true;
+            q.push({startDR,startUR});
             while(!q.empty()){
                 int dr=q.front().first;
                 int ur=q.front().second;
@@ -624,6 +649,30 @@ void UsrAI::processData()
                         q.push({newDR,newUR});
                     }
                 }
+            }
+        };
+        auto isRanged=[&](int sort){
+            switch(sort)
+            {
+                case AT_CLUBMAN:
+                case AT_SCOUT:
+                case AT_SWORDSMAN:
+                case AT_CAVALRY:
+                case AT_HOPLITE:
+                case AT_CHARIOT:
+                case AT_BROADSWORDSMAN:
+                return false;
+                break;
+                case AT_SLINGER:
+                case AT_BOWMAN:
+                case AT_IMPROVED:
+                case AT_PRIEST:
+                case AT_CHARIOT_ARCHER:
+                case AT_COMPOSITE_BOWMAN:
+                return true;
+                default:
+                return true;
+                break;
             }
         };
         auto allOut_go=[&](tagArmy& army){
@@ -643,20 +692,22 @@ void UsrAI::processData()
             HumanMove(army.SN,dest.first*BLOCKSIDELENGTH,dest.second*BLOCKSIDELENGTH);
         };
         auto allOut_escape=[&](tagArmy& army){
+            int searchRange=5;
+            if(army.Sort==AT_PRIEST)searchRange=10;
             int bestDR = -1;
             int bestUR = -1;
             double bestScore = 0;
-            int startDR = max(army.BlockDR - 5, 2);
-            int startUR = max(army.BlockUR - 5, 2);
-            int endDR = min(army.BlockDR + 5, MAP_L - 2);
-            int endUR = min(army.BlockUR + 5, MAP_U - 2);
+            int startDR = max(army.BlockDR - searchRange, 2);
+            int startUR = max(army.BlockUR - searchRange, 2);
+            int endDR = min(army.BlockDR + searchRange, MAP_L - 2);
+            int endUR = min(army.BlockUR + searchRange, MAP_U - 2);
             for (int dr = startDR; dr <= endDR; dr++) {
                 for (int ur = startUR; ur <= endUR; ur++) {
                     double score = 0;
                     if (curMap[dr][ur]!=0)continue;
                     for (tagArmy& enemy : info.enemy_armies) {
                         double dToEnemy = calDistance(army.DR, army.UR, enemy.DR, enemy.UR);
-                        if (dToEnemy > 5 * BLOCKSIDELENGTH)continue;
+                        if (dToEnemy > searchRange * BLOCKSIDELENGTH)continue;
                         score += abs(dr - enemy.BlockDR) + abs(ur - enemy.BlockUR);
                     }
                     if (score > bestScore) {
@@ -684,26 +735,13 @@ void UsrAI::processData()
                     }
                 }
             }
-            bool isRanged=true;
-            switch (army.Sort)
-            {
-                case AT_CLUBMAN:
-                case AT_SCOUT:
-                case AT_SWORDSMAN:
-                case AT_CAVALRY:
-                case AT_HOPLITE:
-                case AT_CHARIOT:
-                case AT_BROADSWORDSMAN:
-                isRanged=false;
-                break;
-                default:
-                break;
-            }
             bool danger=false;
-            if(isRanged){
+            if(isRanged(army.Sort)){
+                int awarenessRange=2;
+                if(army.Sort==AT_PRIEST)awarenessRange=5;
                 for(tagArmy& e:info.enemy_armies){
                     double d=calDistance(army.DR,army.UR,e.DR,e.UR);
-                    if(d<=2*BLOCKSIDELENGTH){
+                    if(d<=awarenessRange*BLOCKSIDELENGTH){
                         danger=true;
                         if(army.NowState!=HUMAN_STATE_WALKING)allOut_escape(army);
                         break;
@@ -712,17 +750,38 @@ void UsrAI::processData()
             }
 
             if((locked==-1||!valid)&&!danger){
-                double bestD=1e9;
-                int bestSN=-1;
+                bool hasMelee=false;
+                bool hasStoneThrower=false;
+                int stoneThrowerSN=-1;
                 for(tagArmy& e:info.enemy_armies){
-                    double d=calDistance(army.DR,army.UR,e.DR,e.UR);
-                    if(d<bestD){
-                        bestD=d;
-                        bestSN=e.SN;
+                    if(!isRanged(e.Sort)){
+                        hasMelee=true;
+                        break;
                     }
                 }
-                allOut_rangedLock[army.SN]=bestSN;
-                if(army.NowState!=HUMAN_STATE_WALKING&&bestSN!=-1)HumanAction(army.SN,bestSN);
+                for(tagArmy& e:info.enemy_armies){
+                    if(e.Sort==AT_STONE_THROWER){
+                        hasStoneThrower=true;
+                        stoneThrowerSN=e.SN;
+                        break;
+                    }
+                }
+                if(hasMelee||(!hasMelee&&!hasStoneThrower)){
+                    double bestD=1e9;
+                    int bestSN=-1;
+                    for(tagArmy& e:info.enemy_armies){
+                        double d=calDistance(army.DR,army.UR,e.DR,e.UR);
+                        if(d<bestD){
+                            bestD=d;
+                            bestSN=e.SN;
+                        }
+                    }
+                    allOut_rangedLock[army.SN]=bestSN;
+                    if(army.NowState!=HUMAN_STATE_WALKING&&bestSN!=-1)HumanAction(army.SN,bestSN);
+                }else{
+                    allOut_rangedLock[army.SN]=stoneThrowerSN;
+                    if(army.NowState!=HUMAN_STATE_WALKING&&stoneThrowerSN!=-1)HumanAction(army.SN,stoneThrowerSN);
+                }
             }
         };
         
@@ -747,6 +806,7 @@ void UsrAI::processData()
                 }
             }else{
                 for(tagArmy& a:info.armies){
+                    //视野之内没敌人,往敌方基地赶
                     if(info.enemy_armies.empty()){
                         bool enemyArrowTowerExist=false;
                         for(tagBuilding& b:info.enemy_buildings){
@@ -760,11 +820,11 @@ void UsrAI::processData()
                         }
                     }
                     else{
-                        if(a.Sort==AT_PRIEST&&priestState==HUMAN_STATE_IDLE)continue;
+                        if(a.Sort==AT_PRIEST&&(priestState!=HUMAN_STATE_ATTACKING||!canConvert))continue;
                         //战车弓兵的攻击间隔是1.5秒,即37.5帧
                         if(a.Sort==AT_CHARIOT_ARCHER&&timer%38!=0)continue;
                         //5秒,125帧
-                        if(a.Sirt==AT_STONE_THROWER&&timer%133!=0)continue;
+                        if(a.Sort==AT_STONE_THROWER&&timer%133!=0)continue;
                         smartAttack(a);
                     }
                 }
@@ -774,14 +834,15 @@ void UsrAI::processData()
     //--------------------农民工作--------------------
     if (1) {
     //自刎归天!!!
-    if(timer==33000){
-        int suicided=0;
-        for(tagHuman &farmer:info.farmers){
-            HumanAction(farmer.SN,farmer.SN);
-            suicided++;
-            if(suicided==12)break;
-        }
-    }
+    // if(timer==33000){
+    //     int suicided=0;
+    //     for(tagHuman &farmer:info.farmers){
+    //         HumanAction(farmer.SN,farmer.SN);
+    //         suicided++;
+    //         if(suicided==12)break;
+    //     }
+    // }
+
     //分配工作,暂定 浆果:木头:建造:打猎:农田:石头=2:(3+6):2:6:4:1
     auto classify = [&](int farmerSN) {
         static int mark = 0;
