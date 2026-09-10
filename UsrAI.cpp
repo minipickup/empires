@@ -65,6 +65,7 @@ static int totalBlocks = 10000;
 static double exploredRatio = 0;
 //--------------------农民工作--------------------
 static bool isInitializing = true;
+static vector<int>freeFarmers;
 static vector<int>berryFarmers;
 static vector<int>woodFarmers;
 static vector<int>stoneFarmers;
@@ -79,19 +80,22 @@ static bool wheelResearching = false;
 static int wheelResearchTimer = 0;
 static bool wheelUnlocked = false;
 static bool logisticsResearching=false;
+static bool WOODResearching=false;
+static int WOODResearchTimer=0;
+static bool WOODUnlocked=false;
 //--------------------发动总攻--------------------
-static int allOut_time=30000;
+static int allOut_time=25000;
 static int diri[8]={1,1,0,-1,-1,-1,0,1};
 static int dirj[8]={0,1,1,1,0,-1,-1,-1};
 static int ddr[4]={1,0,-1,0};
 static int dur[4]={0,1,0,-1};
 unordered_map<int,int>allOut_dir;
-// 总攻配套旧逻辑的开关/营地记忆(敌袭响应、祭司回家、军队留守、探图窗口都会读它)
-static bool allOut_started=false;         // =allOut:总攻开始后停用旧响应逻辑
-static bool allOut_campFounded=false;     // 已发现敌方营地/主力位置
+static bool allOut_started=false;
+static bool allOut_campFounded=false;
 static int allOut_campDR=-1;
 static int allOut_campUR=-1;
 static int allOut_campSN=-1;
+static unordered_set<int>destroyedTower;
 //--------------------小小功能--------------------
 int getBuildingSize(int type) {
     switch (type) {
@@ -121,7 +125,16 @@ void UsrAI::processData()
     }*/
     tagInfo info = getInfo();
     //更新地图信息
+    int bugdetWood=0;
+    int bugdetMeat=0;
+    int bugdetStone=0;
+    int bugdetGold=0;
     int curMap[100][100] = { 0 };//-1迷雾 0可建造 1资源 2建筑 3单位 4湖泊
+    bool reachable[100][100]={0};
+    bool hasAnimal=false;
+    bool hasBush=false;
+    unordered_map<int,int>busyObject;
+    set<pair<int,int>>frontier;
     if (1) {
         if (info.theMap != nullptr) {
             for (int dr = 0; dr < MAP_L; dr++) {
@@ -159,6 +172,71 @@ void UsrAI::processData()
         markUnits(info.armies);
         markUnits(info.enemy_armies);
         markUnits(info.enemy_farmers);
+
+        for(tagBuilding& b:info.enemy_buildings){
+            if(b.Type!=BUILDING_ARROWTOWER)continue;
+            if((double)b.Blood/b.MaxBlood<0.5)destroyedTower.insert(b.SN);
+        }
+
+        auto scanMap=[&](){
+            queue<pair<int,int>>q;
+            //不能直接用基地坐标,否则出不去
+            int startDR=baseBlockDR,startUR=baseBlockUR;
+            bool started=false;
+            for(int dr=baseBlockDR-15;dr<baseBlockDR+15&&!started;dr++){
+                for(int ur=baseBlockUR-15;ur<baseBlockUR+15;ur++){
+                    if(dr>=0&&dr<100&&ur>=0&&ur<100&&curMap[dr][ur]==0){
+                        startDR=dr;
+                        startUR=ur;
+                        started=true;
+                        break;
+                    }
+                }
+            }
+            reachable[startDR][startUR]=true;
+            q.push({startDR,startUR});
+            while(!q.empty()){
+                int dr=q.front().first;
+                int ur=q.front().second;
+                q.pop();
+                for(int i=0;i<4;i++){
+                    int newDR=dr+ddr[i];
+                    int newUR=ur+dur[i];
+                    if(newDR<0||newDR>=100||newUR<0||newUR>=100)continue;
+                    if(curMap[newDR][newUR]==-1)frontier.insert({dr,ur});
+                    if(reachable[newDR][newUR])continue;
+                    if(curMap[newDR][newUR]==0||curMap[newDR][newUR]==3){
+                        reachable[newDR][newUR]=1;
+                        q.push({newDR,newUR});
+                    }
+                }
+            }
+        };
+        scanMap();
+
+        for(tagFarmer& f:info.farmers){
+            if(busyObject[f.WorkObjectSN]++);
+        }
+
+        for(tagResource& a:info.resources){
+            if(a.Type!=RESOURCE_ELEPHANT&&a.Type!=RESOURCE_GAZELLE)continue;
+            bool OK=false;
+            for(int i=-1;i<=1&&!OK;i++){
+                for(int j=-1;j<=1;j++){
+                    if(a.BlockDR+i<0||a.BlockDR+i>=100||
+                        a.BlockUR+j<0||a.BlockUR+j>=100)continue;
+                    if(curMap[a.BlockDR+i][a.BlockUR+j]==0)OK=true;
+                }
+            }
+            if(!OK)continue;
+            if(calDistance(a.DR,a.UR,allOut_campDR*BLOCKSIDELENGTH,allOut_campUR*BLOCKSIDELENGTH)/BLOCKSIDELENGTH<15)continue;
+            hasAnimal=true;
+        }
+        for(tagResource& r:info.resources){
+            if(r.Type!=RESOURCE_BUSH)continue;
+            if(calDistance(r.DR,r.UR,allOut_campDR*BLOCKSIDELENGTH,allOut_campUR*BLOCKSIDELENGTH)/BLOCKSIDELENGTH<15)continue;
+            hasBush=true;
+        }
     }
     //更新祭祀信息
     for (const tagArmy& army : info.armies) {
@@ -191,21 +269,7 @@ void UsrAI::processData()
                 }
             }
             return bestTargetEnemySN;
-            };
-        bool hasAggro = false;
-        for (tagArmy& army : info.armies) {
-            if (army.Sort == AT_PRIEST)continue;
-            if (army.NowState == HUMAN_STATE_ATTACKING) {
-                hasAggro = true;
-                break;
-            }
-        }
-        // if ((hasAggro || info.armies.size() < 3) && attackInComing && canConvert && priestState == HUMAN_STATE_IDLE) {
-        //     int targetSN = findBestTargetEnemySN();
-        //     if (targetSN != -1) {
-        //         HumanAction(priestSN, targetSN);
-        //     }
-        // }
+        };
         if (coolDownWhenAttacked > 0)coolDownWhenAttacked--;
 
         if (attackInComing && !allOut_started) {
@@ -395,6 +459,7 @@ void UsrAI::processData()
                         for (tagArmy& a : info.armies) {
                             if (a.SN == priestSN)continue;
                             if (a.NowState != HUMAN_STATE_IDLE)continue;
+                            hasStoneThrower=true;
                             HumanAction(a.SN, e.SN);
                         }
                     }
@@ -427,14 +492,14 @@ void UsrAI::processData()
             }
         }
 
-// 祭司探图定时:5分钟(7500 tick)~8分半(12750 tick)为强制探图窗口,
+        // 祭司探图定时:5分半(8250 tick)~8分钟(12000 tick)为强制探图窗口,
         // 不受敌袭标志(attackInComing≈3.7分钟就置真)阻断;8分半后停探回家。
         if (!allOut_started && baseFound) {
-            if (timer >= 7500 && timer < 12750) {
-                needExploration = true;                 // 定时探图窗口内持续探图
-            }
-            if (timer >= 12750) {
-                needExploration = false;                // 8分半后停探
+            // if (timer >= 8250 && timer < 12000) {
+            //     needExploration = true;                 // 定时探图窗口内持续探图
+            // }
+            if (timer >= 12000) {
+                needExploration = false;                // 8分钟后停探
                 if (priestState == HUMAN_STATE_IDLE &&
                     abs(priestBlockDR - baseBlockDR) + abs(priestBlockUR - baseBlockUR) > 4) {
                     HumanMove(priestSN, (baseBlockDR - 1) * BLOCKSIDELENGTH,
@@ -443,7 +508,7 @@ void UsrAI::processData()
             }
         }
 
-        bool exploreWindow = (timer >= 7500 && timer < 12750);   // 强制探图窗口(不受attackInComing阻断)
+        bool exploreWindow = false;
         if (needExploration && (!attackInComing || exploreWindow)) {
             // 找祭司(优先空闲的,别跟敌袭抢人)
             if (!priestFound) {
@@ -615,42 +680,9 @@ void UsrAI::processData()
     }
     //--------------------发动总攻--------------------
     if (1) {
-        bool reachable[100][100]={0};
-        set<pair<int,int>>frontier;
-        auto scanMap=[&](){
-            queue<pair<int,int>>q;
-            //不能直接用基地坐标,否则出不去
-            int startDR=baseBlockDR,startUR=baseBlockUR;
-            bool started=false;
-            for(int dr=baseBlockDR-10;dr<baseBlockDR+10&&!started;dr++){
-                for(int ur=baseBlockUR-10;ur<baseBlockUR+10;ur++){
-                    if(dr>=0&&dr<100&&ur>=0&&ur<100&&curMap[dr][ur]==0){
-                        startDR=dr;
-                        startUR=ur;
-                        started=true;
-                        break;
-                    }
-                }
-            }
-            reachable[startDR][startUR]=true;
-            q.push({startDR,startUR});
-            while(!q.empty()){
-                int dr=q.front().first;
-                int ur=q.front().second;
-                q.pop();
-                for(int i=0;i<4;i++){
-                    int newDR=dr+ddr[i];
-                    int newUR=ur+dur[i];
-                    if(newDR<0||newDR>=100||newUR<0||newUR>=100)continue;
-                    if(curMap[newDR][newUR]==-1)frontier.insert({dr,ur});
-                    if(reachable[newDR][newUR])continue;
-                    if(curMap[newDR][newUR]==0||curMap[newDR][newUR]==3){
-                        reachable[newDR][newUR]=1;
-                        q.push({newDR,newUR});
-                    }
-                }
-            }
-        };
+        bool hasMelee=false;
+        bool hasStoneThrower=false;
+        int stoneThrowerSN=-1;
         auto isRanged=[&](int sort){
             switch(sort)
             {
@@ -675,6 +707,21 @@ void UsrAI::processData()
                 break;
             }
         };
+        if(1){
+            for(tagArmy& e:info.enemy_armies){
+                if(!isRanged(e.Sort)){
+                    hasMelee=true;
+                    break;
+                }
+            }
+            for(tagArmy& e:info.enemy_armies){
+                if(e.Sort==AT_STONE_THROWER){
+                    hasStoneThrower=true;
+                    stoneThrowerSN=e.SN;
+                    break;
+                }
+            }
+        }
         auto allOut_go=[&](tagArmy& army){
             int bestD=1e9;
             pair<int,int>dest={-1,-1};
@@ -720,7 +767,7 @@ void UsrAI::processData()
             if (bestDR != -1 && bestUR != -1) {
                 HumanMove(army.SN, bestDR * BLOCKSIDELENGTH, bestUR * BLOCKSIDELENGTH);
             }
-        };
+        };   
         auto smartAttack=[&](tagArmy& army){
             int locked=-1;
             auto it=allOut_rangedLock.find(army.SN);
@@ -729,7 +776,7 @@ void UsrAI::processData()
             if(locked!=-1){
                 for(tagArmy& e:info.enemy_armies){
                     if(e.SN!=locked)continue;
-                    if(calDistance(army.DR,army.UR,e.DR,e.UR)<=7){
+                    if(calDistance(army.DR,army.UR,e.DR,e.UR)<=8*BLOCKSIDELENGTH){
                         valid=true;
                         if(army.NowState==HUMAN_STATE_IDLE)HumanAction(army.SN,e.SN);
                     }
@@ -738,7 +785,7 @@ void UsrAI::processData()
             bool danger=false;
             if(isRanged(army.Sort)){
                 int awarenessRange=2;
-                if(army.Sort==AT_PRIEST)awarenessRange=5;
+                if(army.Sort==AT_PRIEST||army.Sort==AT_STONE_THROWER)awarenessRange=5;
                 for(tagArmy& e:info.enemy_armies){
                     double d=calDistance(army.DR,army.UR,e.DR,e.UR);
                     if(d<=awarenessRange*BLOCKSIDELENGTH){
@@ -750,22 +797,6 @@ void UsrAI::processData()
             }
 
             if((locked==-1||!valid)&&!danger){
-                bool hasMelee=false;
-                bool hasStoneThrower=false;
-                int stoneThrowerSN=-1;
-                for(tagArmy& e:info.enemy_armies){
-                    if(!isRanged(e.Sort)){
-                        hasMelee=true;
-                        break;
-                    }
-                }
-                for(tagArmy& e:info.enemy_armies){
-                    if(e.Sort==AT_STONE_THROWER){
-                        hasStoneThrower=true;
-                        stoneThrowerSN=e.SN;
-                        break;
-                    }
-                }
                 if(hasMelee||(!hasMelee&&!hasStoneThrower)){
                     double bestD=1e9;
                     int bestSN=-1;
@@ -784,13 +815,25 @@ void UsrAI::processData()
                 }
             }
         };
-        
+        auto attackTower=[&](tagArmy& army){
+            double bestD=1e9;
+            int bestSN=-1;
+            for(tagBuilding& b:info.enemy_buildings){
+                if(b.Type!=BUILDING_ARROWTOWER)continue;
+                double d=calDistance(army.DR,army.UR,b.BlockDR*BLOCKSIDELENGTH,b.BlockUR*BLOCKSIDELENGTH);
+                if(d<bestD){
+                    bestD=d;
+                    bestSN=b.SN;
+                }
+            }
+            HumanAction(army.SN,bestSN);
+        };
         if(timer>=allOut_time&&!allOut_started)allOut_started=true;
 
         if(allOut_started&&timer%19==0){
-            scanMap();
             if(!allOut_campFounded){
                 for(tagArmy& a : info.armies){
+                    //if(a.Sort==AT_PRIEST)continue;
                     allOut_go(a);
                 }
                 for(tagBuilding& b:info.enemy_buildings){
@@ -804,23 +847,32 @@ void UsrAI::processData()
                         HumanMove(a.SN,baseBlockDR*BLOCKSIDELENGTH,baseBlockUR*BLOCKSIDELENGTH);
                     }
                 }
-            }else{
+            }else if(allOut_campFounded){
+                bool enemyArrowTowerExist=false;
+                for(tagBuilding& b:info.enemy_buildings){
+                    if(b.Type==BUILDING_ARROWTOWER){
+                        enemyArrowTowerExist=true;
+                    }
+                }
                 for(tagArmy& a:info.armies){
                     //视野之内没敌人,往敌方基地赶
                     if(info.enemy_armies.empty()){
-                        bool enemyArrowTowerExist=false;
-                        for(tagBuilding& b:info.enemy_buildings){
-                            if(b.Type==BUILDING_ARROWTOWER){
-                                HumanAction(a.SN,b.SN);
-                                enemyArrowTowerExist=true;
-                            }
-                        }
-                        if(!enemyArrowTowerExist){
+                        if(enemyArrowTowerExist&&a.NowState!=HUMAN_STATE_ATTACKING){
+                            if(a.Sort==AT_PRIEST||timer%38!=0)continue;
+                            attackTower(a);
+                        }else if(!enemyArrowTowerExist){
+                            if(a.Sort==AT_PRIEST)continue;
                             HumanMove(a.SN,allOut_campDR*BLOCKSIDELENGTH,allOut_campUR*BLOCKSIDELENGTH);
+                        }
+                        if(destroyedTower.size()>=4){
+                            if(priestState==HUMAN_STATE_IDLE){
+                                HumanAction(priestSN,allOut_campSN);
+                                DebugText("敌人全灭,箭塔几乎全灭,祭司转化siege");
+                            }
                         }
                     }
                     else{
-                        if(a.Sort==AT_PRIEST&&(priestState==HUMAN_STATE_ATTACKING||!canConvert))continue;
+                        if(a.Sort==AT_PRIEST&&(hasMelee||priestState==HUMAN_STATE_ATTACKING||!canConvert))continue;
                         //战车弓兵的攻击间隔是1.5秒,即37.5帧
                         if(a.Sort==AT_CHARIOT_ARCHER&&timer%38!=0)continue;
                         //5秒,125帧
@@ -833,40 +885,30 @@ void UsrAI::processData()
     }
     //--------------------农民工作--------------------
     if (1) {
-    //自刎归天!!!
-    // if(timer==33000){
-    //     int suicided=0;
-    //     for(tagHuman &farmer:info.farmers){
-    //         HumanAction(farmer.SN,farmer.SN);
-    //         suicided++;
-    //         if(suicided==12)break;
-    //     }
-    // }
-
-    //分配工作,暂定 浆果:木头:建造:打猎:农田:石头=2:(3+6):2:6:4:1
+    //分配工作,暂定 浆果:木头:建造:打猎:农田:石头=2:(3+8):2:6:2:1
     auto classify = [&](int farmerSN) {
         static int mark = 0;
-        if (mark % 24 <= 1)berryFarmers.push_back(farmerSN);
-        else if (mark % 24 <= 4)woodFarmers.push_back(farmerSN);
-        else if (mark % 24 <= 6)buildingFarmers.push_back(farmerSN);
-        else if (mark % 24 <= 12)hunterFarmers.push_back(farmerSN);
-        else if (mark % 24 <= 18)woodFarmers.push_back(farmerSN);
+        if (mark % 24 <= 1){berryFarmers.push_back(farmerSN);freeFarmers.push_back(farmerSN);}
+        else if (mark % 24 <= 4){woodFarmers.push_back(farmerSN);freeFarmers.push_back(farmerSN);}
+        else if (mark % 24 <= 6){buildingFarmers.push_back(farmerSN);freeFarmers.push_back(farmerSN);}
+        else if (mark % 24 <= 12){hunterFarmers.push_back(farmerSN);freeFarmers.push_back(farmerSN);}
+        else if (mark % 24 <= 20){woodFarmers.push_back(farmerSN);freeFarmers.push_back(farmerSN);}
         else if (mark % 24 <= 22)farmFarmers.push_back(farmerSN);
-        else stoneFarmers.push_back(farmerSN);
-        DebugText("农民人口=");
-        DebugText(mark + 1);
-        DebugText("采果子人数=");
-        DebugText((int)berryFarmers.size());
-        DebugText("砍树人数=");
-        DebugText((int)woodFarmers.size());
-        DebugText("建造人数=");
-        DebugText((int)buildingFarmers.size());
-        DebugText("打猎人数=");
-        DebugText((int)hunterFarmers.size());
-        DebugText("农田人数=");
-        DebugText((int)farmFarmers.size());
-        DebugText("采石头人数=");
-        DebugText((int)stoneFarmers.size());
+        else {stoneFarmers.push_back(farmerSN);freeFarmers.push_back(farmerSN);}
+        // DebugText("农民人口=");
+        // DebugText(mark + 1);
+        // DebugText("采果子人数=");
+        // DebugText((int)berryFarmers.size());
+        // DebugText("砍树人数=");
+        // DebugText((int)woodFarmers.size());
+        // DebugText("建造人数=");
+        // DebugText((int)buildingFarmers.size());
+        // DebugText("打猎人数=");
+        // DebugText((int)hunterFarmers.size());
+        // DebugText("农田人数=");
+        // DebugText((int)farmFarmers.size());
+        // DebugText("采石头人数=");
+        // DebugText((int)stoneFarmers.size());
         mark++;
         };
 
@@ -921,7 +963,6 @@ void UsrAI::processData()
         }
         if (!classified) {
             classify(SN);
-            DebugText(SN);
         }
     }
 
@@ -929,13 +970,37 @@ void UsrAI::processData()
         for (int SN : farmers) {
             for (tagFarmer& farmer : info.farmers) {
                 if (farmer.SN != SN)continue;
-                if (farmer.NowState != HUMAN_STATE_IDLE)break;
+                if(farmer.NowState!=HUMAN_STATE_IDLE)continue;
                 int bestResourceSN = -1;
                 double minDist = 1e18;
                 double dist = 1e18;
                 for (tagResource& resource : info.resources) {
                     if (resource.Type != type)continue;
-                    dist = calDistance(farmer.DR, farmer.UR, resource.DR, resource.UR);
+                    if(type==RESOURCE_TREE){
+                        if(busyObject.count(resource.SN))continue;
+                        bool OK=false;
+                        for(int i=-1;i<=1&&!OK;i++){
+                            for(int j=-1;j<=1;j++){
+                                if(resource.BlockDR+i<0||resource.BlockDR+i>=100||
+                                    resource.BlockUR+j<0||resource.BlockUR+j>=100)continue;
+                                if(curMap[resource.BlockDR+i][resource.BlockUR+j]==0)OK=true;
+                            }
+                        }
+                        if(!OK)continue;
+                    }
+                    if(resource.Type==RESOURCE_TREE){
+                        for(tagBuilding& b:info.buildings){
+                            if(b.Type!=BUILDING_STOCK)continue;
+                            dist=calDistance(b.BlockDR*BLOCKSIDELENGTH,b.BlockUR*BLOCKSIDELENGTH,resource.DR,resource.UR);
+                        }
+                    }else if(resource.Type==RESOURCE_BUSH){
+                        for(tagBuilding& b:info.buildings){
+                            if(b.Type!=BUILDING_GRANARY)continue;
+                            dist=calDistance(b.BlockDR*BLOCKSIDELENGTH,b.BlockUR*BLOCKSIDELENGTH,resource.DR,resource.UR);
+                        }
+                    }else {
+                        dist = calDistance(farmer.DR, farmer.UR, resource.DR, resource.UR);
+                    }
                     if (dist < minDist) {
                         minDist = dist;
                         bestResourceSN = resource.SN;
@@ -947,62 +1012,291 @@ void UsrAI::processData()
                 break;
             }
         }
+    };
+    auto findOptimumPos = [&](int type) {
+        int size = getBuildingSize(type) + 1;
+        int bestDR = -1;
+        int bestUR = -1;
+        double bestScore = -1e9;
+        for (int dr = 1; dr < MAP_L - size - 1; dr++) {
+            for (int ur = 1; ur < MAP_U - size - 1; ur++) {
+                bool canBuild = true;
+                for (int i = 0; i < size && canBuild; i++) {
+                    for (int j = 0; j < size && canBuild; j++) {
+                        if (curMap[dr + i][ur + j] != 0) {
+                            canBuild = false;
+                            break;
+                        }
+                    }
+                }
+                if (!canBuild)continue;
+                double score = 0;
+
+                if (type == BUILDING_ARROWTOWER) {
+                    for (tagBuilding& building : info.buildings) {
+                        if (building.Type != type)continue;
+                        int dToSameType = abs(dr - building.BlockDR) + abs(ur - building.BlockUR);
+                        score -= dToSameType;
+                    }
+                    if (abs(dr - baseBlockDR) <= 4 || abs(ur - baseBlockUR) <= 4)score -= 10;
+                    if (abs(dr - baseBlockDR) >= 6 || abs(ur - baseBlockUR) >= 6)score -= 10;
+                }
+                else if (type == BUILDING_FARM) {
+                    for (tagBuilding& building : info.buildings) {
+                        if (building.Type != BUILDING_GRANARY)continue;
+                        int dToGranary= abs(dr - building.BlockDR) + abs(ur - building.BlockUR);
+                        score += (10 - dToGranary);
+                    }
+                }
+                else if(type==BUILDING_STOCK){
+                    for(tagResource& a:info.resources){
+                        if(a.Type!=RESOURCE_GAZELLE&&a.Type!=RESOURCE_ELEPHANT)continue;
+                        double d=calDistance(a.DR,a.UR,dr*BLOCKSIDELENGTH,ur*BLOCKSIDELENGTH)/BLOCKSIDELENGTH;
+                        if(d>15)continue;
+                        score+=(15-d);
+                    }
+                }
+                else {
+                    int dToBase = abs(dr - baseBlockDR)+abs(ur - baseBlockUR);
+                    score += (10 - dToBase);
+                    for (tagBuilding& building : info.buildings) {
+                        if (building.Type != type)continue;
+                        int dToSameType = abs(dr - building.BlockDR) + abs(ur - building.BlockUR);
+                        score += (10 - dToSameType) * 2;
+                    }
+                }
+                if (score > bestScore) {
+                    bestScore = score;
+                    bestDR = dr;
+                    bestUR = ur;
+                }
+            }
+        }
+        return pair<int, int>{bestDR, bestUR};
         };
+    auto build = [&](int type) {
+        vector<int>*farmers=&buildingFarmers;
+        if (type == BUILDING_FARM) {
+            farmers = &farmFarmers;
+            if(!hasAnimal&&!hasBush)farmers=&freeFarmers;
+        }else if(type == BUILDING_STOCK){
+            farmers = &hunterFarmers;
+        }
+        for (int SN : *farmers) {
+            for (tagFarmer& farmer : info.farmers) {
+                if (farmer.SN != SN)continue;
+                if (farmer.NowState != HUMAN_STATE_IDLE)break;
+                pair<int, int>pos = findOptimumPos(type);
+                if (pos.first == -1) {
+                    DebugText("没有合适的地点建造");
+                    break;
+                }
+                HumanBuild(SN, type, pos.first, pos.second);
+                if(type==BUILDING_FARM){
+                    DebugText("我是龙民,我要耕地!");
+                    DebugText(farmer.SN);
+                }
+                return;
+            }
+        }
+        };
+    auto hunt=[&](){
+        double bestScore=-1e9;
+        int bestSN=-1;
+        double itsDR=-1;
+        double itsUR=-1;
+        int stockDR=-1;
+        int stockUR=-1;
+        bool needNewStock=true;
+        bool needHelp=false;
+        int needHelpSN=-1;
+        for(tagBuilding& b:info.buildings){
+            if(b.Type!=BUILDING_STOCK)continue;
+            stockDR=b.BlockDR;
+            stockUR=b.BlockUR;
+            break;
+        }
+        if(timer>18000){
+            // for(tagResource& a:info.resources){
+            //     if(a.Type!=RESOURCE_ELEPHANT&&a.Type!=RESOURCE_GAZELLE)continue;
+            //     double score=0;
+            //     double d=calDistance(a.DR,a.UR,stockDR*BLOCKSIDELENGTH,stockUR*BLOCKSIDELENGTH)/BLOCKSIDELENGTH;
+            //     if(a.Type==RESOURCE_ELEPHANT){
+            //         score-=(d+5);
+            //         if(busyObject.count(a.SN)){
+            //             score+=10;
+            //             if(busyObject[a.SN]>6)score-=30;
+            //         }
+            //     }
+            //     if(a.Type==RESOURCE_GAZELLE){
+            //         score-=d;
+            //         if(busyObject.count(a.SN)&&busyObject[a.SN]>3)score-=15;
+            //     }
+            //     if(score>bestScore){
+            //         bestScore=score;
+            //         bestSN=a.SN;
+            //     }
+            // }
+            // for(int sn:freeFarmers){
+            //     for(tagFarmer& f:info.farmers){
+            //         if(f.SN!=sn)continue;
+            //         if(f.NowState!=HUMAN_STATE_IDLE)break;
+            //         HumanAction(sn,bestSN);
+            //         return;
+            //     }
+            // }
+            //////////////////////////////////////
+            for(tagResource& a:info.resources){
+                if(a.Type!=RESOURCE_ELEPHANT&&a.Type!=RESOURCE_GAZELLE)continue;
+                bool OK=false;
+                for(int i=-1;i<=1&&!OK;i++){
+                    for(int j=-1;j<=1;j++){
+                        if(a.BlockDR+i<0||a.BlockDR+i>=100||
+                            a.BlockUR+j<0||a.BlockUR+j>=100)continue;
+                        if(curMap[a.BlockDR+i][a.BlockUR+j]==0)OK=true;
+                    }
+                }
+                if(!OK)continue;
+                for(tagBuilding& b:info.buildings){
+                    if(b.Type!=BUILDING_STOCK&&b.Type!=BUILDING_CENTER)continue;
+                    double score=0;
+                    double d=calDistance(a.DR,a.UR,b.BlockDR*BLOCKSIDELENGTH,b.BlockUR*BLOCKSIDELENGTH)/BLOCKSIDELENGTH;
+                    if(a.Type==RESOURCE_ELEPHANT){
+                        score-=(d+5);
+                        if(busyObject.count(a.SN)){
+                            score+=10;
+                            if(busyObject[a.SN]>6)score-=30;
+                        }
+                    }
+                    if(a.Type==RESOURCE_GAZELLE){
+                        score-=d;
+                        if(busyObject.count(a.SN)&&busyObject[a.SN]>3)score-=15;
+                    }
+                    if(score>bestScore){
+                        bestScore=score;
+                        bestSN=a.SN;
+                        itsDR=a.DR;
+                        itsUR=a.UR;
+                    }
+                }
+            }
+            if(bestSN==-1||itsDR==-1||itsUR==-1)return;
+            for(tagBuilding& b:info.buildings){
+                if(b.Type!=BUILDING_STOCK&&b.Type!=BUILDING_CENTER)continue;
+                double d=calDistance(itsDR,itsUR,b.BlockDR*BLOCKSIDELENGTH,b.BlockUR*BLOCKSIDELENGTH)/BLOCKSIDELENGTH;
+                if(d<15){
+                    needNewStock=false;
+                    if(b.Percent<100){
+                        needHelp=true;
+                        needHelpSN=b.SN;
+                    }
+                    break;
+                }
+            }
+            for(int sn:freeFarmers){
+                for(tagFarmer& f:info.farmers){
+                    if(f.SN!=sn)continue;
+                    if(f.NowState!=HUMAN_STATE_IDLE)break;
+                    if(needNewStock&&info.Wood-bugdetWood>=BUILD_STOCK_WOOD){
+                        build(BUILDING_STOCK);
+                        bugdetWood+=BUILD_STOCK_WOOD;
+                    }else if(needHelp){
+                        HumanAction(sn,needHelpSN);
+                    }
+                    else{
+                        HumanAction(sn,bestSN);
+                    }
+                    return;
+                }
+            }
+        }else{
+            for(tagResource& a:info.resources){
+                if(a.Type!=RESOURCE_ELEPHANT&&a.Type!=RESOURCE_GAZELLE)continue;
+                bool OK=false;
+                for(int i=-1;i<=1&&!OK;i++){
+                    for(int j=-1;j<=1;j++){
+                        if(a.BlockDR+i<0||a.BlockDR+i>=100||
+                            a.BlockUR+j<0||a.BlockUR+j>=100)continue;
+                        if(curMap[a.BlockDR+i][a.BlockUR+j]==0)OK=true;
+                    }
+                }
+                if(!OK)continue;
+                for(tagBuilding& b:info.buildings){
+                    if(b.Type!=BUILDING_STOCK&&b.Type!=BUILDING_CENTER)continue;
+                    double score=0;
+                    double d=calDistance(a.DR,a.UR,b.BlockDR*BLOCKSIDELENGTH,b.BlockUR*BLOCKSIDELENGTH)/BLOCKSIDELENGTH;
+                    if(a.Type==RESOURCE_ELEPHANT){
+                        score-=(d+5);
+                        if(hunterFarmers.size()<5)score-=100;
+                        if(busyObject.count(a.SN))score+=10;
+                    }
+                    if(a.Type==RESOURCE_GAZELLE){
+                        score-=d;
+                        if(busyObject.count(a.SN)&&busyObject[a.SN]>3)score-=15;
+                    }
+                    if(score>bestScore){
+                        bestScore=score;
+                        bestSN=a.SN;
+                        itsDR=a.DR;
+                        itsUR=a.UR;
+                    }
+                }
+            }
+            if(bestSN==-1||itsDR==-1||itsUR==-1)return;
+            for(tagBuilding& b:info.buildings){
+                if(b.Type!=BUILDING_STOCK&&b.Type!=BUILDING_CENTER)continue;
+                double d=calDistance(itsDR,itsUR,b.BlockDR*BLOCKSIDELENGTH,b.BlockUR*BLOCKSIDELENGTH)/BLOCKSIDELENGTH;
+                if(d<15){
+                    needNewStock=false;
+                    if(b.Percent<100){
+                        needHelp=true;
+                        needHelpSN=b.SN;
+                    }
+                    break;
+                }
+            }
+            for(int sn:hunterFarmers){
+                for(tagFarmer& f:info.farmers){
+                    if(f.SN!=sn)continue;
+                    if(f.NowState!=HUMAN_STATE_IDLE)break;
+                    if(needNewStock&&info.Wood-bugdetWood>=BUILD_STOCK_WOOD){
+                        build(BUILDING_STOCK);
+                        bugdetWood+=BUILD_STOCK_WOOD;
+                    }else if(needHelp){
+                        HumanAction(sn,needHelpSN);
+                    }
+                    else{
+                        HumanAction(sn,bestSN);
+                    }
+                    return;
+                }
+            }
+        }
+    };
     if(timer>18000){
         if(info.Meat*7<info.Wood*4){
-            assignTask(buildingFarmers,RESOURCE_ELEPHANT);
-            assignTask(buildingFarmers,RESOURCE_GAZELLE);
-            assignTask(berryFarmers,RESOURCE_ELEPHANT);
-            assignTask(berryFarmers,RESOURCE_GAZELLE);
-            assignTask(stoneFarmers,RESOURCE_ELEPHANT);
-            assignTask(stoneFarmers,RESOURCE_GAZELLE);
-            assignTask(woodFarmers,RESOURCE_ELEPHANT);
-            assignTask(woodFarmers,RESOURCE_GAZELLE);
+            if(hasAnimal)hunt();
+            else{
+                assignTask(freeFarmers,RESOURCE_BUSH);
+            }
         }else{
-            assignTask(buildingFarmers,RESOURCE_TREE);
-            assignTask(berryFarmers,RESOURCE_TREE);
-            assignTask(stoneFarmers,RESOURCE_TREE);
-            assignTask(woodFarmers,RESOURCE_TREE);
+            assignTask(freeFarmers,RESOURCE_TREE);
+        }
+    }
+    else {
+        if(hasAnimal)hunt();
+        else if(hasBush){
+            assignTask(hunterFarmers,RESOURCE_BUSH);
+        }else{
+            build(BUILDING_FARM);
         }
     }
     if(timer<21750)assignTask(berryFarmers, RESOURCE_BUSH);
     if(timer<20000)assignTask(woodFarmers, RESOURCE_TREE);
     if(timer<18000)assignTask(stoneFarmers, RESOURCE_GOLD);
-    if(timer<22500){
-        for (tagBuilding& building : info.buildings) {
-            if (building.Type != BUILDING_FARM)continue;
-            for (int SN : farmFarmers) {
-                for (tagFarmer& farmer : info.farmers) {
-                    if (farmer.SN != SN)continue;
-                    if (farmer.NowState != HUMAN_STATE_IDLE)break;
-                    HumanAction(SN, building.SN);
-                }
-            }
-        }
-    }
-    bool lionFound = false;
-    for (tagResource& resource : info.resources) {
-        if (resource.Type == RESOURCE_ELEPHANT) {
-            lionFound = true;
-            break;
-        }
-    }
-    bool elephantFound = false;
-    for (tagResource& resource : info.resources) {
-        if (resource.Type == RESOURCE_ELEPHANT) {
-            elephantFound = true;
-            break;
-        }
-    }
-    //击杀优先级 象>瞪羚
-    if (hunterFarmers.size() >= 5 && elephantFound) {
-        assignTask(hunterFarmers, RESOURCE_ELEPHANT);
-    }
-    else {
-        assignTask(hunterFarmers, RESOURCE_GAZELLE);
-    }
     //盖建筑
     if(1){
+        bool turnForMe=true;
         //记录建筑个数
         int homeCnt = 0, granaryCnt = 0, stockCnt = 0;
         int farmCnt = 0, arrowtowerCnt = 0, armycampCnt = 0;
@@ -1045,472 +1339,133 @@ void UsrAI::processData()
             default:break;
             }
         }
-        auto findOptimumPos = [&](int type) {
-            int size = getBuildingSize(type) + 1;
-            int bestDR = -1;
-            int bestUR = -1;
-            double bestScore = -1e9;
-            for (int dr = 1; dr < MAP_L - size - 1; dr++) {
-                for (int ur = 1; ur < MAP_U - size - 1; ur++) {
-                    bool canBuild = true;
-                    for (int i = 0; i < size && canBuild; i++) {
-                        for (int j = 0; j < size && canBuild; j++) {
-                            if (curMap[dr + i][ur + j] != 0) {
-                                canBuild = false;
-                                break;
-                            }
-                        }
-                    }
-                    if (!canBuild)continue;
-                    double score = 0;
-                    
-
-                    if (type == BUILDING_ARROWTOWER) {
-                        for (tagBuilding& building : info.buildings) {
-                            if (building.Type != type)continue;
-                            int dToSameType = abs(dr - building.BlockDR) + abs(ur - building.BlockUR);
-                            score -= dToSameType;
-                        }
-                        if (abs(dr - baseBlockDR) <= 4 || abs(ur - baseBlockUR) <= 4)score -= 10;
-                        if (abs(dr - baseBlockDR) >= 6 || abs(ur - baseBlockUR) >= 6)score -= 10;
-                    }
-                    else if (type == BUILDING_FARM) {
-                        for (tagBuilding& building : info.buildings) {
-                            if (building.Type != BUILDING_GRANARY)continue;
-                            /*if (abs(dr - building.BlockDR) <= 3 || abs(ur - building.BlockDR) <= 3)score -= 10;
-                            if (abs(dr - building.BlockDR) >= 6 || abs(ur - building.BlockDR) >= 6)score -= 10;
-                            if (abs(dr - building.BlockDR) >= 10 || abs(ur - building.BlockDR) >= 10)score -= 100;*/
-                            int dToGranary= abs(dr - building.BlockDR) + abs(ur - building.BlockUR);
-                            score += (10 - dToGranary);
-                        }
-                    }
-                    else {
-                        int dToBase = abs(dr - baseBlockDR)+abs(ur - baseBlockUR);
-                        score += (10 - dToBase);
-                        /*if (abs(dr - baseBlockDR) + abs(ur - baseBlockUR) <= 3)score -= 30;
-                        if (abs(dr - baseBlockDR) + abs(ur - baseBlockUR) >= 6)score -= 10;
-                        if (abs(dr - baseBlockDR) + abs(ur - baseBlockUR) >= 20)score -= 50;
-                        if (abs(dr - baseBlockDR) == 3 || abs(ur - baseBlockUR) == 3)score -= 50;*/
-                        for (tagBuilding& building : info.buildings) {
-                            if (building.Type != type)continue;
-                            int dToSameType = abs(dr - building.BlockDR) + abs(ur - building.BlockUR);
-                            score += (10 - dToSameType) * 2;
-                        }
-                    }
-                    if (score > bestScore) {
-                        bestScore = score;
-                        bestDR = dr;
-                        bestUR = ur;
-                    }
-                }
-            }
-            return pair<int, int>{bestDR, bestUR};
-            };
-        auto build = [&](int type) {
-            vector<int>*farmers=&buildingFarmers;
-            if (type == BUILDING_FARM) {
-                farmers = &farmFarmers;
-            }
-            for (int SN : *farmers) {
-                for (tagFarmer& farmer : info.farmers) {
-                    if (farmer.SN != SN)continue;
-                    if (farmer.NowState != HUMAN_STATE_IDLE)break;
-                    pair<int, int>pos = findOptimumPos(type);
-                    if (pos.first == -1) {
-                        DebugText("没有合适的地点建造");
-                        break;
-                    }
-                    HumanBuild(SN, type, pos.first, pos.second);
-                }
-            }
-            };
         
-        if(!granaryCnt1&&info.Wood>=BUILD_GRANARY_WOOD)build(BUILDING_GRANARY);
-        if (farmCnt1 < 4 && info.Wood >= BUILD_FARM_WOOD && marketCnt)build(BUILDING_FARM);
-        if(timer>18000&&rangeCnt1<4&&info.Wood >= BUILD_RANGE_WOOD)build(BUILDING_RANGE);
-        if(timer>22000&&homeCnt1 < 12 && info.Wood >= BUILD_HOUSE_WOOD)build(BUILDING_HOME);
-        if (homeCnt1 < 6 && info.Wood >= BUILD_HOUSE_WOOD)build(BUILDING_HOME);
-        else if (!marketCnt1 && info.Wood >= BUILD_MARKET_WOOD)build(BUILDING_MARKET);
-        //else if (arrowtowerCnt1 < 1 && info.Stone >= BUILD_ARROWTOWER_STONE && arrowTowerUnlocked)build(BUILDING_ARROWTOWER);
-        else if(homeCnt1 < 9 && info.Wood >= BUILD_HOUSE_WOOD)build(BUILDING_HOME);
-        else if (!armycampCnt1 && info.Wood >= BUILD_ARMYCAMP_WOOD)build(BUILDING_ARMYCAMP);
-        else if (!rangeCnt1 && info.Wood >= BUILD_MARKET_WOOD && armycampCnt)build(BUILDING_RANGE);
-        else if (!stableCnt1 && info.Wood >= BUILD_STABLE_WOOD && armycampCnt)build(BUILDING_STABLE);
-        //
+        if(!granaryCnt1&&info.Wood-bugdetWood>=BUILD_GRANARY_WOOD){build(BUILDING_GRANARY);bugdetWood+=BUILD_GRANARY_WOOD;}
+        if (farmCnt1 < 4 && info.Wood-bugdetWood >= BUILD_FARM_WOOD && marketCnt&&WOODUnlocked){build(BUILDING_FARM);bugdetWood+=BUILD_FARM_WOOD;}
+        if(timer>18000&&rangeCnt1<4&&info.Wood-bugdetWood >= BUILD_RANGE_WOOD){build(BUILDING_RANGE);bugdetWood+=BUILD_RANGE_WOOD;}
+        if(timer>16000&&homeCnt1<12 && info.Wood-bugdetWood >= BUILD_HOUSE_WOOD){build(BUILDING_HOME);bugdetWood+=BUILD_HOUSE_WOOD;}
+        if (homeCnt1 < 6 && info.Wood-bugdetWood >= BUILD_HOUSE_WOOD){
+            build(BUILDING_HOME);
+            bugdetWood+=BUILD_HOUSE_WOOD;
+            turnForMe=false;
+        }
+        else if (turnForMe&&!marketCnt1){
+            if(info.Wood-bugdetWood >= BUILD_MARKET_WOOD){build(BUILDING_MARKET);bugdetWood+=BUILD_MARKET_WOOD;}
+            turnForMe=false;
+        } 
+        else if(turnForMe&&homeCnt1<9){
+            if(info.Wood-bugdetWood >= BUILD_HOUSE_WOOD&&WOODUnlocked){build(BUILDING_HOME);bugdetWood+=BUILD_HOUSE_WOOD;}
+            turnForMe=false;
+        }
+        else if (turnForMe&&!armycampCnt1){
+            if(info.Wood-bugdetWood >= BUILD_ARMYCAMP_WOOD&&WOODUnlocked){build(BUILDING_ARMYCAMP);bugdetWood+=BUILD_ARMYCAMP_WOOD;}
+            turnForMe=false;
+        } 
+        else if (turnForMe&&!rangeCnt1){
+            if(info.Wood-bugdetWood >= BUILD_RANGE_WOOD && armycampCnt&&WOODUnlocked){build(BUILDING_RANGE);bugdetWood+=BUILD_RANGE_WOOD;}
+            turnForMe=false;
+        }
+        else if (turnForMe&&!stableCnt1){
+            if(info.Wood-bugdetWood >= BUILD_STABLE_WOOD && armycampCnt&&WOODUnlocked){build(BUILDING_STABLE);bugdetWood+=BUILD_STABLE_WOOD;}
+        }
     }
-    // else{
-    //     assignTask(buildingFarmers,RESOURCE_TREE);
-    // }
-    }
-    if (1) {
-    // //分配工作,暂定 浆果:木头:建造:打猎:农田:石头=2:(3+6):2:6:4:1
-    // auto classify = [&](int farmerSN) {
-    //     static int mark = 0;
-    //     if (mark % 24 <= 1)berryFarmers.push_back(farmerSN);
-    //     else if (mark % 24 <= 4)woodFarmers.push_back(farmerSN);
-    //     else if (mark % 24 <= 6)buildingFarmers.push_back(farmerSN);
-    //     else if (mark % 24 <= 12)hunterFarmers.push_back(farmerSN);
-    //     else if (mark % 24 <= 18)woodFarmers.push_back(farmerSN);
-    //     else if (mark % 24 <= 22)farmFarmers.push_back(farmerSN);
-    //     else stoneFarmers.push_back(farmerSN);
-    //     DebugText("农民人口=");
-    //     DebugText(mark + 1);
-    //     DebugText("采果子人数=");
-    //     DebugText((int)berryFarmers.size());
-    //     DebugText("砍树人数=");
-    //     DebugText((int)woodFarmers.size());
-    //     DebugText("建造人数=");
-    //     DebugText((int)buildingFarmers.size());
-    //     DebugText("打猎人数=");
-    //     DebugText((int)hunterFarmers.size());
-    //     DebugText("农田人数=");
-    //     DebugText((int)farmFarmers.size());
-    //     DebugText("采石头人数=");
-    //     DebugText((int)stoneFarmers.size());
-    //     mark++;
-    //     };
-
-    // for (tagFarmer& farmer : info.farmers) {
-    //     int SN = farmer.SN;
-    //     bool classified = false;
-    //     for (int id : berryFarmers) {
-    //         if (id == SN) {
-    //             classified = true;
-    //             break;
-    //         }
-    //     }
-    //     if (!classified) {
-    //         for (int id : woodFarmers) {
-    //             if (id == SN) {
-    //                 classified = true;
-    //                 break;
-    //             }
-    //         }
-    //     }
-    //     if (!classified) {
-    //         for (int id : stoneFarmers) {
-    //             if (id == SN) {
-    //                 classified = true;
-    //                 break;
-    //             }
-    //         }
-    //     }
-    //     if (!classified) {
-    //         for (int id : buildingFarmers) {
-    //             if (id == SN) {
-    //                 classified = true;
-    //                 break;
-    //             }
-    //         }
-    //     }
-    //     if (!classified) {
-    //         for (int id : hunterFarmers) {
-    //             if (id == SN) {
-    //                 classified = true;
-    //                 break;
-    //             }
-    //         }
-    //     }
-    //     if (!classified) {
-    //         for (int id : farmFarmers) {
-    //             if (id == SN) {
-    //                 classified = true;
-    //                 break;
-    //             }
-    //         }
-    //     }
-    //     if (!classified) {
-    //         classify(SN);
-    //         DebugText(SN);
-    //     }
-    // }
-
-    // auto assignTask = [&](vector<int>farmers, int type) {
-    //     for (int SN : farmers) {
-    //         for (tagFarmer& farmer : info.farmers) {
-    //             if (farmer.SN != SN)continue;
-    //             if (farmer.NowState != HUMAN_STATE_IDLE)break;
-    //             int bestResourceSN = -1;
-    //             double minDist = 1e18;
-    //             double dist = 1e18;
-    //             for (tagResource& resource : info.resources) {
-    //                 if (resource.Type != type)continue;
-    //                 dist = calDistance(farmer.DR, farmer.UR, resource.DR, resource.UR);
-    //                 if (dist < minDist) {
-    //                     minDist = dist;
-    //                     bestResourceSN = resource.SN;
-    //                 }
-    //             }
-    //             if (bestResourceSN != -1) {
-    //                 HumanAction(farmer.SN, bestResourceSN);
-    //             }
-    //             break;
-    //         }
-    //     }
-    //     };
-    // if(timer>18000){
-    //     if(info.Meat*4<info.Gold*7){
-    //         assignTask(buildingFarmers,RESOURCE_ELEPHANT);
-    //         assignTask(buildingFarmers,RESOURCE_GAZELLE);
-    //         assignTask(berryFarmers,RESOURCE_ELEPHANT);
-    //         assignTask(berryFarmers,RESOURCE_GAZELLE);
-    //         assignTask(stoneFarmers,RESOURCE_ELEPHANT);
-    //         assignTask(stoneFarmers,RESOURCE_GAZELLE);
-    //         assignTask(woodFarmers,RESOURCE_ELEPHANT);
-    //         assignTask(woodFarmers,RESOURCE_GAZELLE);
-    //     }else{
-    //         assignTask(buildingFarmers,RESOURCE_GOLD);
-    //         assignTask(berryFarmers,RESOURCE_GOLD);
-    //         assignTask(stoneFarmers,RESOURCE_GOLD);
-    //         assignTask(woodFarmers,RESOURCE_GOLD);
-    //     }
-    // }
-    // if(timer<21750)assignTask(berryFarmers, RESOURCE_BUSH);
-    // if(timer<20000)assignTask(woodFarmers, RESOURCE_TREE);
-    // assignTask(stoneFarmers, RESOURCE_GOLD);
-    // if(timer<22500){
-    //     for (tagBuilding& building : info.buildings) {
-    //         if (building.Type != BUILDING_FARM)continue;
-    //         for (int SN : farmFarmers) {
-    //             for (tagFarmer& farmer : info.farmers) {
-    //                 if (farmer.SN != SN)continue;
-    //                 if (farmer.NowState != HUMAN_STATE_IDLE)break;
-    //                 HumanAction(SN, building.SN);
-    //             }
-    //         }
-    //     }
-    // }
-    // bool lionFound = false;
-    // for (tagResource& resource : info.resources) {
-    //     if (resource.Type == RESOURCE_ELEPHANT) {
-    //         lionFound = true;
-    //         break;
-    //     }
-    // }
-    // bool elephantFound = false;
-    // for (tagResource& resource : info.resources) {
-    //     if (resource.Type == RESOURCE_ELEPHANT) {
-    //         elephantFound = true;
-    //         break;
-    //     }
-    // }
-    // //击杀优先级 象>瞪羚
-    // if (hunterFarmers.size() >= 5 && elephantFound) {
-    //     assignTask(hunterFarmers, RESOURCE_ELEPHANT);
-    // }
-    // else {
-    //     assignTask(hunterFarmers, RESOURCE_GAZELLE);
-    // }
-    // //盖建筑
-    // if(1){
-    //     //记录建筑个数
-    //     int homeCnt = 0, granaryCnt = 0, stockCnt = 0;
-    //     int farmCnt = 0, arrowtowerCnt = 0, armycampCnt = 0;
-    //     int stableCnt = 0, rangeCnt = 0, siegeCnt = 0;
-    //     int marketCnt = 0, collageCnt=0;
-    //     int homeCnt1 = 0, granaryCnt1 = 0, stockCnt1 = 0;
-    //     int farmCnt1 = 0, arrowtowerCnt1 = 0, armycampCnt1 = 0;
-    //     int stableCnt1 = 0, rangeCnt1 = 0, siegeCnt1 = 0;
-    //     int marketCnt1 = 0, collageCnt1=0;
-    //     for (tagBuilding& building : info.buildings) {
-    //         if (building.Percent != 100)continue;
-    //         switch (building.Type) {
-    //         case BUILDING_HOME:homeCnt++; break;
-    //         case BUILDING_GRANARY:granaryCnt++; break;
-    //         case BUILDING_STOCK:stockCnt++; break;
-    //         case BUILDING_FARM:farmCnt++; break;
-    //         case BUILDING_ARROWTOWER:arrowtowerCnt++; break;
-    //         case BUILDING_ARMYCAMP:armycampCnt++; break;
-    //         case BUILDING_STABLE:stableCnt++; break;
-    //         case BUILDING_RANGE:rangeCnt++; break;
-    //         case BUILDING_SIEGE:siegeCnt++; break;
-    //         case BUILDING_MARKET:marketCnt++; break;
-    //         case BUILDING_COLLAGE:collageCnt++; break;
-    //         default:break;
-    //         }
-    //     }
-    //     for (tagBuilding& building : info.buildings) {
-    //         switch (building.Type) {
-    //         case BUILDING_HOME:homeCnt1++; break;
-    //         case BUILDING_GRANARY:granaryCnt1++; break;
-    //         case BUILDING_STOCK:stockCnt1++; break;
-    //         case BUILDING_FARM:farmCnt1++; break;
-    //         case BUILDING_ARROWTOWER:arrowtowerCnt1++; break;
-    //         case BUILDING_ARMYCAMP:armycampCnt1++; break;
-    //         case BUILDING_STABLE:stableCnt1++; break;
-    //         case BUILDING_RANGE:rangeCnt1++; break;
-    //         case BUILDING_SIEGE:siegeCnt1++; break;
-    //         case BUILDING_MARKET:marketCnt1++; break;
-    //         case BUILDING_COLLAGE:collageCnt1++; break;
-    //         default:break;
-    //         }
-    //     }
-    //     auto findOptimumPos = [&](int type) {
-    //         int size = getBuildingSize(type) + 1;
-    //         int bestDR = -1;
-    //         int bestUR = -1;
-    //         double bestScore = -1e9;
-    //         for (int dr = 1; dr < MAP_L - size - 1; dr++) {
-    //             for (int ur = 1; ur < MAP_U - size - 1; ur++) {
-    //                 bool canBuild = true;
-    //                 for (int i = 0; i < size && canBuild; i++) {
-    //                     for (int j = 0; j < size && canBuild; j++) {
-    //                         if (curMap[dr + i][ur + j] != 0) {
-    //                             canBuild = false;
-    //                             break;
-    //                         }
-    //                     }
-    //                 }
-    //                 if (!canBuild)continue;
-    //                 double score = 0;
-                    
-
-    //                 if (type == BUILDING_ARROWTOWER) {
-    //                     for (tagBuilding& building : info.buildings) {
-    //                         if (building.Type != type)continue;
-    //                         int dToSameType = abs(dr - building.BlockDR) + abs(ur - building.BlockUR);
-    //                         score -= dToSameType;
-    //                     }
-    //                     if (abs(dr - baseBlockDR) <= 4 || abs(ur - baseBlockUR) <= 4)score -= 10;
-    //                     if (abs(dr - baseBlockDR) >= 6 || abs(ur - baseBlockUR) >= 6)score -= 10;
-    //                 }
-    //                 else if (type == BUILDING_FARM) {
-    //                     for (tagBuilding& building : info.buildings) {
-    //                         if (building.Type != BUILDING_GRANARY)continue;
-    //                         /*if (abs(dr - building.BlockDR) <= 3 || abs(ur - building.BlockDR) <= 3)score -= 10;
-    //                         if (abs(dr - building.BlockDR) >= 6 || abs(ur - building.BlockDR) >= 6)score -= 10;
-    //                         if (abs(dr - building.BlockDR) >= 10 || abs(ur - building.BlockDR) >= 10)score -= 100;*/
-    //                         int dToGranary= abs(dr - building.BlockDR) + abs(ur - building.BlockUR);
-    //                         score += (10 - dToGranary);
-    //                     }
-    //                 }
-    //                 else {
-    //                     int dToBase = abs(dr - baseBlockDR)+abs(ur - baseBlockUR);
-    //                     score += (10 - dToBase);
-    //                     /*if (abs(dr - baseBlockDR) + abs(ur - baseBlockUR) <= 3)score -= 30;
-    //                     if (abs(dr - baseBlockDR) + abs(ur - baseBlockUR) >= 6)score -= 10;
-    //                     if (abs(dr - baseBlockDR) + abs(ur - baseBlockUR) >= 20)score -= 50;
-    //                     if (abs(dr - baseBlockDR) == 3 || abs(ur - baseBlockUR) == 3)score -= 50;*/
-    //                     for (tagBuilding& building : info.buildings) {
-    //                         if (building.Type != type)continue;
-    //                         int dToSameType = abs(dr - building.BlockDR) + abs(ur - building.BlockUR);
-    //                         score += (10 - dToSameType) * 2;
-    //                     }
-    //                 }
-    //                 if (score > bestScore) {
-    //                     bestScore = score;
-    //                     bestDR = dr;
-    //                     bestUR = ur;
-    //                 }
-    //             }
-    //         }
-    //         return pair<int, int>{bestDR, bestUR};
-    //         };
-    //     auto build = [&](int type) {
-    //         vector<int>*farmers=&buildingFarmers;
-    //         if (type == BUILDING_FARM) {
-    //             farmers = &farmFarmers;
-    //         }
-    //         for (int SN : *farmers) {
-    //             for (tagFarmer& farmer : info.farmers) {
-    //                 if (farmer.SN != SN)continue;
-    //                 if (farmer.NowState != HUMAN_STATE_IDLE)break;
-    //                 pair<int, int>pos = findOptimumPos(type);
-    //                 if (pos.first == -1) {
-    //                     DebugText("没有合适的地点建造");
-    //                     break;
-    //                 }
-    //                 HumanBuild(SN, type, pos.first, pos.second);
-    //             }
-    //         }
-    //         };
-        
-    //     if (farmCnt1 < 4 && info.Wood >= BUILD_FARM_WOOD && marketCnt)build(BUILDING_FARM);
-    //     if(info.civilizationStage==CIVILIZATION_BRONZEAGE&&collageCnt1<4&&info.Wood >= BUILD_COLLAGE_WOOD)build(BUILDING_COLLAGE);
-    //     if(timer>20000&&homeCnt1 < 13 && info.Wood >= BUILD_HOUSE_WOOD)build(BUILDING_HOME);
-    //     if (homeCnt1 < 6 && info.Wood >= BUILD_HOUSE_WOOD)build(BUILDING_HOME);
-    //     else if (!marketCnt1 && info.Wood >= BUILD_MARKET_WOOD)build(BUILDING_MARKET);
-    //     //else if (arrowtowerCnt1 < 1 && info.Stone >= BUILD_ARROWTOWER_STONE && arrowTowerUnlocked)build(BUILDING_ARROWTOWER);
-    //     else if(homeCnt1 < 9 && info.Wood >= BUILD_HOUSE_WOOD)build(BUILDING_HOME);
-    //     else if (!armycampCnt1 && info.Wood >= BUILD_ARMYCAMP_WOOD)build(BUILDING_ARMYCAMP);
-    //     else if (!rangeCnt1 && info.Wood >= BUILD_MARKET_WOOD && armycampCnt)build(BUILDING_RANGE);
-    //     else if (!stableCnt1 && info.Wood >= BUILD_STABLE_WOOD && armycampCnt)build(BUILDING_STABLE);
-    //     //
-    // }
-    // // else{
-    // //     assignTask(buildingFarmers,RESOURCE_TREE);
-    // // }
     }
     //--------------------建筑工作--------------------
     if (1) {
         //进阶时代
-        if (info.Meat >= 800) {
+        if (info.Meat-bugdetMeat >= 800) {
             BuildingAction(baseSN, BUILDING_CENTER_UPGRADE);
+            bugdetMeat+=800;
         }
         //生产村民
         if (info.farmers.size() < 24 && info.farmers.size() + info.armies.size() < info.Human_MaxNum&&timer<35000) {
-            for (tagBuilding& building : info.buildings) {
-                if (building.Type != BUILDING_CENTER)continue;
-                if (info.Meat >= BUILDING_CENTER_CREATEFARMER_FOOD) {
-                    BuildingAction(building.SN, BUILDING_CENTER_CREATEFARMER);
+            if(info.farmers.size()<18||WOODUnlocked){
+                for (tagBuilding& building : info.buildings) {
+                    if (building.Type != BUILDING_CENTER)continue;
+                    if (info.Meat-bugdetMeat >= BUILDING_CENTER_CREATEFARMER_FOOD) {
+                        BuildingAction(building.SN, BUILDING_CENTER_CREATEFARMER);
+                        bugdetMeat+=BUILDING_CENTER_CREATEFARMER_FOOD;
+                    }
                 }
             }
         }
-        if(!logisticsResearching&&info.Gold>=BUILDING_ARMYCAMP_RESEARCH_LOGISTICS_GOLD&&info.Meat>=BUILDING_ARMYCAMP_RESEARCH_LOGISTICS_FOOD){
+        if(!logisticsResearching&&info.Gold-bugdetGold>=BUILDING_ARMYCAMP_RESEARCH_LOGISTICS_GOLD&&info.Meat-bugdetMeat>=BUILDING_ARMYCAMP_RESEARCH_LOGISTICS_FOOD){
             logisticsResearching=true;
             for(tagBuilding&building:info.buildings){
                 if(building.Type!=BUILDING_ARMYCAMP)continue;
                 BuildingAction(building.SN,BUILDING_ARMYCAMP_RESEARCH_LOGISTICS);
+                bugdetGold+=BUILDING_ARMYCAMP_RESEARCH_LOGISTICS_GOLD;
+                bugdetMeat+=BUILDING_ARMYCAMP_RESEARCH_LOGISTICS_FOOD;
             }
         }
         for(tagBuilding &building:info.buildings){
             if(building.Type!=BUILDING_COLLAGE)continue;
-            if(info.Gold>=BUILDING_COLLAGE_CREATE_HOPLITE_GOLD&&info.Meat>=BUILDING_COLLAGE_CREATE_HOPLITE_FOOD){
+            if(info.Gold-bugdetGold>=BUILDING_COLLAGE_CREATE_HOPLITE_GOLD&&info.Meat-bugdetMeat>=BUILDING_COLLAGE_CREATE_HOPLITE_FOOD){
                 BuildingAction(building.SN,BUILDING_COLLAGE_CREATE_HOPLITE);
+                bugdetGold+=BUILDING_COLLAGE_CREATE_HOPLITE_GOLD;
+                bugdetMeat+=BUILDING_COLLAGE_CREATE_HOPLITE_FOOD;
             }
         }
         if (wheelUnlocked) {
-            //生产驷马战车
-            // if (info.farmers.size() + info.armies.size() < info.Human_MaxNum) {
-            //     for (tagBuilding& building : info.buildings) {
-            //         if (building.Type != BUILDING_STABLE)continue;
-            //         if (info.Meat >= BUILDING_STABLE_CREATE_CHARIOT_FOOD && info.Wood >= BUILDING_STABLE_CREATE_CHARIOT_WOOD) {
-            //             BuildingAction(building.SN, BUILDING_STABLE_CREATE_CHARIOT);
-            //         }
-            //     }
-            // }
             //生产战车弓兵
             if (info.farmers.size() + info.armies.size() < info.Human_MaxNum) {
                 for (tagBuilding& building : info.buildings) {
                     if (building.Type != BUILDING_RANGE)continue;
-                    if (info.Meat >= BUILDING_RANGE_CREATE_CHARIOT_ARCHER_FOOD && info.Wood >= BUILDING_RANGE_CREATE_CHARIOT_ARCHER_WOOD) {
+                    if (info.Meat-bugdetMeat >= BUILDING_RANGE_CREATE_CHARIOT_ARCHER_FOOD && info.Wood-bugdetWood >= BUILDING_RANGE_CREATE_CHARIOT_ARCHER_WOOD) {
                         BuildingAction(building.SN, BUILDING_RANGE_CREATE_CHARIOT_ARCHER);
+                        bugdetMeat+=BUILDING_RANGE_CREATE_CHARIOT_ARCHER_FOOD;
+                        bugdetWood+=BUILDING_RANGE_CREATE_CHARIOT_ARCHER_WOOD;
                     }
                 }
             }
         }
         //研发箭塔
-        if (arrowTowerResearching) {
-            arrowTowerResearchTimer++;
+        // if (arrowTowerResearching) {
+        //     arrowTowerResearchTimer++;
+        // }
+        // if (arrowTowerResearchTimer == 250 && !arrowTowerUnlocked) {
+        //     arrowTowerUnlocked = true;
+        //     arrowTowerResearching = false;
+        //     DebugText("箭塔研发完成");
+        // }
+        // if (!arrowTowerResearching && !arrowTowerUnlocked) {
+        //     for (tagBuilding& b : info.buildings) {
+        //         if (b.Type != BUILDING_GRANARY)continue;
+        //         if(info.Meat-bugdetMeat>=BUILDING_GRANARY_ARROWTOWER_FOOD){
+        //             BuildingAction(b.SN, BUILDING_GRANARY_ARROWTOWER);
+        //             bugdetMeat+=BUILDING_GRANARY_ARROWTOWER_FOOD;
+        //             arrowTowerResearching = true;
+        //             DebugText("开始研发箭塔");
+        //         }
+        //         break;
+        //     }
+        // }
+        if(WOODResearching){
+            WOODResearchTimer++;
         }
-        if (arrowTowerResearchTimer == 250 && !arrowTowerUnlocked) {
-            arrowTowerUnlocked = true;
-            arrowTowerResearching = false;
-            DebugText("箭塔研发完成");
+        if(WOODResearchTimer==1000&&!WOODUnlocked){
+            WOODUnlocked=true;
+            WOODResearching=false;
+            DebugText("木材加工研发完成");
         }
-        if (!arrowTowerResearching && !arrowTowerUnlocked) {
-            for (tagBuilding& b : info.buildings) {
-                if (b.Type != BUILDING_GRANARY)continue;
-                BuildingAction(b.SN, BUILDING_GRANARY_ARROWTOWER);
-                arrowTowerResearching = true;
-                DebugText("开始研发箭塔");
+        if(!WOODResearching&&!WOODUnlocked){
+            for(tagBuilding& b:info.buildings){
+                if(b.Type!=BUILDING_MARKET)continue;
+                if(info.Wood-bugdetWood>=BUILDING_MARKET_WOOD_UPGRADE_WOOD&&
+                    info.Meat-bugdetMeat>=BUILDING_MARKET_WOOD_UPGRADE_FOOD){
+                        BuildingAction(b.SN,BUILDING_MARKET_WOOD_UPGRADE);
+                        bugdetWood+=BUILDING_MARKET_WOOD_UPGRADE_WOOD;
+                        bugdetMeat+=BUILDING_MARKET_WOOD_UPGRADE_FOOD;
+                        WOODResearching=true;
+                    DebugText("开始研发木材加工");
+                }
                 break;
             }
         }
         if (wheelResearching) {
             wheelResearchTimer++;
         }
-        if (wheelResearchTimer == 1600 && !wheelUnlocked) {
+        if (wheelResearchTimer == 1000 && !wheelUnlocked) {
             wheelUnlocked = true;
             wheelResearching = false;
             DebugText("车轮研发完成");
@@ -1518,9 +1473,14 @@ void UsrAI::processData()
         if (info.civilizationStage == CIVILIZATION_BRONZEAGE && !wheelResearching && !wheelUnlocked) {
             for (tagBuilding& b : info.buildings) {
                 if (b.Type != BUILDING_MARKET)continue;
-                BuildingAction(b.SN, BUILDING_MARKET_WHEEL_UPGRADE);
-                wheelResearching = true;
-                DebugText("开始研发车轮");
+                if(info.Wood-bugdetWood>=BUILDING_MARKET_WHEEL_UPGRADE_WOOD&&
+                    info.Meat-bugdetMeat>=BUILDING_MARKET_WHEEL_UPGRADE_FOOD){
+                        BuildingAction(b.SN, BUILDING_MARKET_WHEEL_UPGRADE);
+                        bugdetWood+=BUILDING_MARKET_WHEEL_UPGRADE_WOOD;
+                        bugdetMeat+=BUILDING_MARKET_WHEEL_UPGRADE_FOOD;
+                        wheelResearching = true;
+                        DebugText("开始研发车轮");
+                }
                 break;
             }
         }
