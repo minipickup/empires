@@ -66,6 +66,7 @@ static double exploredRatio = 0;
 //--------------------农民工作--------------------
 static bool isInitializing = true;
 static vector<int>freeFarmers;
+static vector<int>foodFarmers;
 static vector<int>berryFarmers;
 static vector<int>woodFarmers;
 static vector<int>stoneFarmers;
@@ -234,6 +235,7 @@ void UsrAI::processData()
         }
         for(tagResource& r:info.resources){
             if(r.Type!=RESOURCE_BUSH)continue;
+            if(busyObject.count(r.SN)&&busyObject[r.SN]>2)continue;
             if(calDistance(r.DR,r.UR,allOut_campDR*BLOCKSIDELENGTH,allOut_campUR*BLOCKSIDELENGTH)/BLOCKSIDELENGTH<15)continue;
             hasBush=true;
         }
@@ -888,27 +890,13 @@ void UsrAI::processData()
     //分配工作,暂定 浆果:木头:建造:打猎:农田:石头=2:(3+8):2:6:2:1
     auto classify = [&](int farmerSN) {
         static int mark = 0;
-        if (mark % 24 <= 1){berryFarmers.push_back(farmerSN);freeFarmers.push_back(farmerSN);}
+        if (mark % 24 <= 1){berryFarmers.push_back(farmerSN);freeFarmers.push_back(farmerSN);foodFarmers.push_back(farmerSN);}
         else if (mark % 24 <= 4){woodFarmers.push_back(farmerSN);freeFarmers.push_back(farmerSN);}
         else if (mark % 24 <= 6){buildingFarmers.push_back(farmerSN);freeFarmers.push_back(farmerSN);}
-        else if (mark % 24 <= 12){hunterFarmers.push_back(farmerSN);freeFarmers.push_back(farmerSN);}
+        else if (mark % 24 <= 12){hunterFarmers.push_back(farmerSN);freeFarmers.push_back(farmerSN);foodFarmers.push_back(farmerSN);}
         else if (mark % 24 <= 20){woodFarmers.push_back(farmerSN);freeFarmers.push_back(farmerSN);}
         else if (mark % 24 <= 22)farmFarmers.push_back(farmerSN);
         else {stoneFarmers.push_back(farmerSN);freeFarmers.push_back(farmerSN);}
-        // DebugText("农民人口=");
-        // DebugText(mark + 1);
-        // DebugText("采果子人数=");
-        // DebugText((int)berryFarmers.size());
-        // DebugText("砍树人数=");
-        // DebugText((int)woodFarmers.size());
-        // DebugText("建造人数=");
-        // DebugText((int)buildingFarmers.size());
-        // DebugText("打猎人数=");
-        // DebugText((int)hunterFarmers.size());
-        // DebugText("农田人数=");
-        // DebugText((int)farmFarmers.size());
-        // DebugText("采石头人数=");
-        // DebugText((int)stoneFarmers.size());
         mark++;
         };
 
@@ -1045,13 +1033,21 @@ void UsrAI::processData()
                     for (tagBuilding& building : info.buildings) {
                         if (building.Type != BUILDING_GRANARY)continue;
                         int dToGranary= abs(dr - building.BlockDR) + abs(ur - building.BlockUR);
-                        score += (10 - dToGranary);
+                        score += (20 - dToGranary);
                     }
                 }
                 else if(type==BUILDING_STOCK){
                     for(tagResource& a:info.resources){
                         if(a.Type!=RESOURCE_GAZELLE&&a.Type!=RESOURCE_ELEPHANT)continue;
                         double d=calDistance(a.DR,a.UR,dr*BLOCKSIDELENGTH,ur*BLOCKSIDELENGTH)/BLOCKSIDELENGTH;
+                        if(d>15)continue;
+                        score+=(15-d);
+                    }
+                }
+                else if(type==BUILDING_GRANARY){
+                    for(tagResource& r:info.resources){
+                        if(r.Type!=RESOURCE_BUSH)continue;
+                        double d=calDistance(r.DR,r.UR,dr*BLOCKSIDELENGTH,ur*BLOCKSIDELENGTH)/BLOCKSIDELENGTH;
                         if(d>15)continue;
                         score+=(15-d);
                     }
@@ -1078,9 +1074,14 @@ void UsrAI::processData()
         vector<int>*farmers=&buildingFarmers;
         if (type == BUILDING_FARM) {
             farmers = &farmFarmers;
-            if(!hasAnimal&&!hasBush)farmers=&freeFarmers;
+            if(!hasAnimal&&!hasBush)farmers=&foodFarmers;
         }else if(type == BUILDING_STOCK){
             farmers = &hunterFarmers;
+            if(timer>18000)farmers=&freeFarmers;
+        }else if(type==BUILDING_GRANARY){
+            farmers=&berryFarmers;
+            if(!hasAnimal)farmers=&foodFarmers;
+            if(!hasAnimal&&timer>18000)farmers=&freeFarmers;
         }
         for (int SN : *farmers) {
             for (tagFarmer& farmer : info.farmers) {
@@ -1165,12 +1166,12 @@ void UsrAI::processData()
                         score-=(d+5);
                         if(busyObject.count(a.SN)){
                             score+=10;
-                            if(busyObject[a.SN]>6)score-=30;
+                            if(busyObject[a.SN]>5)score-=30;
                         }
                     }
                     if(a.Type==RESOURCE_GAZELLE){
                         score-=d;
-                        if(busyObject.count(a.SN)&&busyObject[a.SN]>3)score-=15;
+                        if(busyObject.count(a.SN)&&busyObject[a.SN]>2)score-=15;
                     }
                     if(score>bestScore){
                         bestScore=score;
@@ -1232,7 +1233,7 @@ void UsrAI::processData()
                     }
                     if(a.Type==RESOURCE_GAZELLE){
                         score-=d;
-                        if(busyObject.count(a.SN)&&busyObject[a.SN]>3)score-=15;
+                        if(busyObject.count(a.SN)&&busyObject[a.SN]>2)score-=15;
                     }
                     if(score>bestScore){
                         bestScore=score;
@@ -1273,14 +1274,71 @@ void UsrAI::processData()
             }
         }
     };
-    if(timer>18000){
-        if(info.Meat*7<info.Wood*4){
-            if(hasAnimal)hunt();
-            else{
-                assignTask(freeFarmers,RESOURCE_BUSH);
+    auto gatherBerry=[&](){
+        int bestSN=-1;
+        double bestD=1e9;
+        int itsDR=-1;
+        int itsUR=-1;
+        bool needNewGranary=true;
+        bool needHelp=false;
+        int needHelpSN=-1;
+        for(tagResource& r:info.resources){
+            if(r.Type!=RESOURCE_BUSH)continue;
+            if(busyObject.count(r.SN)&&busyObject[r.SN]>2)continue;
+            for(tagBuilding& b:info.buildings){
+                if(b.Type!=BUILDING_GRANARY&&b.Type!=BUILDING_CENTER)continue;
+                double d=calDistance(r.DR,r.UR,b.BlockDR*BLOCKSIDELENGTH,b.BlockUR*BLOCKSIDELENGTH)/BLOCKSIDELENGTH;
+                if(d<bestD){
+                    bestD=d;
+                    bestSN=r.SN;
+                    itsDR=r.DR;
+                    itsUR=r.UR;
+                }
             }
-        }else{
+        }
+        if(bestSN==-1||itsDR==-1||itsUR==-1)return;
+        for(tagBuilding& b:info.buildings){
+            if(b.Type!=BUILDING_GRANARY&&b.Type!=BUILDING_CENTER)continue;
+            double d=calDistance(itsDR,itsUR,b.BlockDR*BLOCKSIDELENGTH,b.BlockUR*BLOCKSIDELENGTH)/BLOCKSIDELENGTH;
+            if(d<15){
+                needNewGranary=false;
+                if(b.Percent<100){
+                    needHelp=true;
+                    needHelpSN=b.SN;
+                }
+                break;
+            }
+        }
+        vector<int>*farmers=&berryFarmers;
+        if(!hasAnimal)farmers=&foodFarmers;
+        if(timer>18000)farmers=&freeFarmers;
+        for(int sn:*farmers){
+            for(tagFarmer& f:info.farmers){
+                if(f.SN!=sn)continue;
+                if(f.NowState!=HUMAN_STATE_IDLE)break;
+                if(needNewGranary&&info.Wood-bugdetWood>=BUILD_GRANARY_WOOD){
+                    build(BUILDING_GRANARY);
+                    bugdetWood+=BUILD_GRANARY_WOOD;
+                }else if(needHelp){
+                    HumanAction(sn,needHelpSN);
+                }else{
+                    HumanAction(sn,bestSN);
+                }
+                return;
+            }
+        }
+    };
+    if(timer>18000){
+        if(info.Wood*4<info.Meat*7||info.Wood<300){
             assignTask(freeFarmers,RESOURCE_TREE);
+        }else{
+            if(hasAnimal)hunt();
+            else if(hasBush){
+                gatherBerry();
+            }
+            else{
+                build(BUILDING_FARM);
+            }
         }
     }
     else {
@@ -1291,7 +1349,7 @@ void UsrAI::processData()
             build(BUILDING_FARM);
         }
     }
-    if(timer<21750)assignTask(berryFarmers, RESOURCE_BUSH);
+    gatherBerry();
     if(timer<20000)assignTask(woodFarmers, RESOURCE_TREE);
     if(timer<18000)assignTask(stoneFarmers, RESOURCE_GOLD);
     //盖建筑
@@ -1341,7 +1399,7 @@ void UsrAI::processData()
         }
         
         if(!granaryCnt1&&info.Wood-bugdetWood>=BUILD_GRANARY_WOOD){build(BUILDING_GRANARY);bugdetWood+=BUILD_GRANARY_WOOD;}
-        if (farmCnt1 < 4 && info.Wood-bugdetWood >= BUILD_FARM_WOOD && marketCnt&&WOODUnlocked){build(BUILDING_FARM);bugdetWood+=BUILD_FARM_WOOD;}
+        if (info.Wood-bugdetWood >= BUILD_FARM_WOOD && marketCnt&&WOODUnlocked){build(BUILDING_FARM);bugdetWood+=BUILD_FARM_WOOD;}
         if(timer>18000&&rangeCnt1<4&&info.Wood-bugdetWood >= BUILD_RANGE_WOOD){build(BUILDING_RANGE);bugdetWood+=BUILD_RANGE_WOOD;}
         if(timer>16000&&homeCnt1<12 && info.Wood-bugdetWood >= BUILD_HOUSE_WOOD){build(BUILDING_HOME);bugdetWood+=BUILD_HOUSE_WOOD;}
         if (homeCnt1 < 6 && info.Wood-bugdetWood >= BUILD_HOUSE_WOOD){
