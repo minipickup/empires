@@ -116,9 +116,22 @@ int getBuildingSize(int type) {
     default: return 1;
     }
 }
-// int getVisionRange(int sort){
-
-// }
+int getVision(int sort){
+    switch(sort){
+        case AT_CHARIOT_ARCHER:
+        case AT_COMPOSITE_BOWMAN:
+        return 10;
+        break;
+        case AT_PRIEST:
+        return 12;
+        break;
+        case AT_STONE_THROWER:
+        return 13;
+        break;
+        default:
+        return 4;
+    }
+}
 void UsrAI::processData()
 {
     /*while(logo<15){
@@ -138,8 +151,15 @@ void UsrAI::processData()
     bool hasBush=false;
     unordered_map<int,int>busyObject;
     set<pair<int,int>>frontier;
-    set<pair<int,int>>visableBlock;
+    bool visableBlock[100][100];
     if (1) {
+        for(int i=0;i<100;i++){
+            for(int j=0;j<100;j++){
+                curMap[i][j]=0;
+                reachable[i][j]=0;
+                visableBlock[i][j]=0;
+            }
+        }
         if (info.theMap != nullptr) {
             for (int dr = 0; dr < MAP_L; dr++) {
                 for (int ur = 0; ur < MAP_U; ur++) {
@@ -244,6 +264,7 @@ void UsrAI::processData()
             hasBush=true;
             break;
         }
+
     }
     //更新祭祀信息
     for (const tagArmy& army : info.armies) {
@@ -809,9 +830,11 @@ void UsrAI::processData()
             /////////////////////////////////////
             if((locked==-1||!valid)&&!danger){
                 if(hasMelee||(!hasMelee&&stoneThrowerSN==-1)){
+                    int vision=getVision(army.Sort);
                     double bestD=1e9;
                     int bestSN=-1;
                     for(tagArmy& e:info.enemy_armies){
+                        if(!visableBlock[e.BlockDR][e.BlockUR])continue;
                         double d=calDistance(army.DR,army.UR,e.DR,e.UR);
                         if(d<bestD){
                             bestD=d;
@@ -840,6 +863,7 @@ void UsrAI::processData()
             }
             HumanAction(army.SN,bestSN);
         };
+        
         if(timer>=allOut_time&&!allOut_started)allOut_started=true;
 
         if(allOut_started&&timer%19==0){
