@@ -116,7 +116,9 @@ int getBuildingSize(int type) {
     default: return 1;
     }
 }
+// int getVisionRange(int sort){
 
+// }
 void UsrAI::processData()
 {
     /*while(logo<15){
@@ -136,6 +138,7 @@ void UsrAI::processData()
     bool hasBush=false;
     unordered_map<int,int>busyObject;
     set<pair<int,int>>frontier;
+    set<pair<int,int>>visableBlock;
     if (1) {
         if (info.theMap != nullptr) {
             for (int dr = 0; dr < MAP_L; dr++) {
@@ -685,6 +688,7 @@ void UsrAI::processData()
     //--------------------发动总攻--------------------
     if (1) {
         bool hasMelee=false;
+        int meleeCnt=0;
         bool hasStoneThrower=false;
         int stoneThrowerSN=-1;
         auto isRanged=[&](int sort){
@@ -715,13 +719,13 @@ void UsrAI::processData()
             for(tagArmy& e:info.enemy_armies){
                 if(!isRanged(e.Sort)){
                     hasMelee=true;
-                    break;
+                    meleeCnt++;
                 }
             }
             for(tagArmy& e:info.enemy_armies){
                 if(e.Sort==AT_STONE_THROWER){
                     hasStoneThrower=true;
-                    stoneThrowerSN=e.SN;
+                    if(e.WorkObjectSN!=-1)stoneThrowerSN=e.SN;
                     break;
                 }
             }
@@ -743,7 +747,7 @@ void UsrAI::processData()
             HumanMove(army.SN,dest.first*BLOCKSIDELENGTH,dest.second*BLOCKSIDELENGTH);
         };
         auto allOut_escape=[&](tagArmy& army){
-            int searchRange=10;
+            int searchRange=8;
             if(army.Sort==AT_PRIEST)searchRange=10;
             int bestDR = -1;
             int bestUR = -1;
@@ -754,6 +758,7 @@ void UsrAI::processData()
             int endUR = min(army.BlockUR + searchRange, MAP_U - 2);
             for (int dr = startDR; dr <= endDR; dr++) {
                 for (int ur = startUR; ur <= endUR; ur++) {
+                    if(calDistance(dr*BLOCKSIDELENGTH,ur*BLOCKSIDELENGTH,army.DR,army.UR)/BLOCKSIDELENGTH>searchRange)continue;
                     double score = 0;
                     if (curMap[dr][ur]!=0)continue;
                     for (tagArmy& enemy : info.enemy_armies) {
@@ -761,6 +766,7 @@ void UsrAI::processData()
                         if (dToEnemy > searchRange * BLOCKSIDELENGTH)continue;
                         score += abs(dr - enemy.BlockDR) + abs(ur - enemy.BlockUR);
                     }
+                    score+=abs(dr-allOut_campDR)+abs(ur-allOut_campUR);
                     if (score > bestScore) {
                         bestScore = score;
                         bestDR = dr;
@@ -789,6 +795,7 @@ void UsrAI::processData()
             bool danger=false;
             if(isRanged(army.Sort)){
                 int awarenessRange=2;
+                //f(!hasMelee&&stoneThrowerSN==-1)awarenessRange=5;
                 if(army.Sort==AT_PRIEST||army.Sort==AT_STONE_THROWER)awarenessRange=5;
                 for(tagArmy& e:info.enemy_armies){
                     double d=calDistance(army.DR,army.UR,e.DR,e.UR);
@@ -799,9 +806,9 @@ void UsrAI::processData()
                     }
                 }
             }
-
+            /////////////////////////////////////
             if((locked==-1||!valid)&&!danger){
-                if(hasMelee||(!hasMelee&&!hasStoneThrower)){
+                if(hasMelee||(!hasMelee&&stoneThrowerSN==-1)){
                     double bestD=1e9;
                     int bestSN=-1;
                     for(tagArmy& e:info.enemy_armies){
@@ -818,6 +825,7 @@ void UsrAI::processData()
                     if(army.NowState!=HUMAN_STATE_WALKING&&stoneThrowerSN!=-1)HumanAction(army.SN,stoneThrowerSN);
                 }
             }
+            /////////////////////////////////////
         };
         auto attackTower=[&](tagArmy& army){
             double bestD=1e9;
@@ -876,9 +884,9 @@ void UsrAI::processData()
                         }
                     }
                     else{
-                        if(a.Sort==AT_PRIEST&&(hasMelee||priestState==HUMAN_STATE_ATTACKING||!canConvert))continue;
+                        if(a.Sort==AT_PRIEST&&(meleeCnt>0||priestState==HUMAN_STATE_ATTACKING||!canConvert))continue;
                         //战车弓兵的攻击间隔是1.5秒,即37.5帧
-                        if(a.Sort==AT_CHARIOT_ARCHER&&timer%38!=0)continue;
+                        if((a.Sort==AT_CHARIOT_ARCHER||a.Sort==AT_HOPLITE)&&timer%38!=0)continue;
                         //5秒,125帧
                         if(a.Sort==AT_STONE_THROWER&&timer%133!=0)continue;
                         smartAttack(a);
@@ -1084,7 +1092,7 @@ void UsrAI::processData()
         }else if(type==BUILDING_GRANARY){
             farmers=&berryFarmers;
             if(!hasAnimal)farmers=&foodFarmers;
-            if(!hasAnimal&&timer>18000)farmers=&freeFarmers;
+            //if(!hasAnimal&&timer>18000)farmers=&freeFarmers;
         }
         for (int SN : *farmers) {
             for (tagFarmer& farmer : info.farmers) {
@@ -1121,35 +1129,6 @@ void UsrAI::processData()
             break;
         }
         if(timer>18000){
-            // for(tagResource& a:info.resources){
-            //     if(a.Type!=RESOURCE_ELEPHANT&&a.Type!=RESOURCE_GAZELLE)continue;
-            //     double score=0;
-            //     double d=calDistance(a.DR,a.UR,stockDR*BLOCKSIDELENGTH,stockUR*BLOCKSIDELENGTH)/BLOCKSIDELENGTH;
-            //     if(a.Type==RESOURCE_ELEPHANT){
-            //         score-=(d+5);
-            //         if(busyObject.count(a.SN)){
-            //             score+=10;
-            //             if(busyObject[a.SN]>6)score-=30;
-            //         }
-            //     }
-            //     if(a.Type==RESOURCE_GAZELLE){
-            //         score-=d;
-            //         if(busyObject.count(a.SN)&&busyObject[a.SN]>3)score-=15;
-            //     }
-            //     if(score>bestScore){
-            //         bestScore=score;
-            //         bestSN=a.SN;
-            //     }
-            // }
-            // for(int sn:freeFarmers){
-            //     for(tagFarmer& f:info.farmers){
-            //         if(f.SN!=sn)continue;
-            //         if(f.NowState!=HUMAN_STATE_IDLE)break;
-            //         HumanAction(sn,bestSN);
-            //         return;
-            //     }
-            // }
-            //////////////////////////////////////
             for(tagResource& a:info.resources){
                 if(a.Type!=RESOURCE_ELEPHANT&&a.Type!=RESOURCE_GAZELLE)continue;
                 bool OK=false;
@@ -1332,15 +1311,24 @@ void UsrAI::processData()
         }
     };
     if(timer>18000){
-        if(info.Wood*4<info.Meat*7||info.Wood<300){
-            assignTask(freeFarmers,RESOURCE_TREE);
-        }else{
-            if(hasAnimal)hunt();
-            else if(hasBush){
-                gatherBerry();
+        if(timer>30000&&info.enemy_armies.size()==0){
+            if(info.Gold*6<info.Meat*4||(!hasAnimal&&!hasBush)){
+                assignTask(freeFarmers,RESOURCE_GOLD);
+            }else{
+                if(hasAnimal)hunt();
+                else if(hasBush){
+                    gatherBerry();
+                }
             }
-            else{
-                build(BUILDING_FARM);
+        }
+        else {
+            if(info.Wood*4<info.Meat*7||info.Wood<300||(!hasAnimal&&!hasBush)){
+                assignTask(freeFarmers,RESOURCE_TREE);
+            }else{
+                if(hasAnimal)hunt();
+                else if(hasBush){
+                    gatherBerry();
+                }
             }
         }
     }
@@ -1348,8 +1336,6 @@ void UsrAI::processData()
         if(hasAnimal)hunt();
         else if(hasBush){
             assignTask(hunterFarmers,RESOURCE_BUSH);
-        }else{
-            build(BUILDING_FARM);
         }
     }
     gatherBerry();
@@ -1403,8 +1389,9 @@ void UsrAI::processData()
         
         if(!granaryCnt1&&info.Wood-bugdetWood>=BUILD_GRANARY_WOOD){build(BUILDING_GRANARY);bugdetWood+=BUILD_GRANARY_WOOD;}
         if (info.Wood-bugdetWood >= BUILD_FARM_WOOD && marketCnt&&WOODUnlocked){build(BUILDING_FARM);bugdetWood+=BUILD_FARM_WOOD;}
-        if(timer>18000&&rangeCnt1<4&&info.Wood-bugdetWood >= BUILD_RANGE_WOOD){build(BUILDING_RANGE);bugdetWood+=BUILD_RANGE_WOOD;}
-        if(timer>16000&&homeCnt1<12 && info.Wood-bugdetWood >= BUILD_HOUSE_WOOD){build(BUILDING_HOME);bugdetWood+=BUILD_HOUSE_WOOD;}
+        if(timer>15000&&rangeCnt1<4&&info.Wood-bugdetWood >= BUILD_RANGE_WOOD){build(BUILDING_RANGE);bugdetWood+=BUILD_RANGE_WOOD;}
+        if(timer>13500&&homeCnt1<12 && info.Wood-bugdetWood >= BUILD_HOUSE_WOOD){build(BUILDING_HOME);bugdetWood+=BUILD_HOUSE_WOOD;}
+        if(timer>30000&&!collageCnt1 && info.Wood-bugdetWood >= BUILD_COLLAGE_WOOD){build(BUILDING_COLLAGE);bugdetWood+=BUILD_COLLAGE_WOOD;}
         if (homeCnt1 < 6 && info.Wood-bugdetWood >= BUILD_HOUSE_WOOD){
             build(BUILDING_HOME);
             bugdetWood+=BUILD_HOUSE_WOOD;
@@ -1544,6 +1531,16 @@ void UsrAI::processData()
                         DebugText("开始研发车轮");
                 }
                 break;
+            }
+        }
+        if(timer>30000&&info.enemy_armies.size()==0){
+            for(tagBuilding& b:info.buildings){
+                if(b.Type!=BUILDING_COLLAGE)continue;
+                if(info.Meat-bugdetMeat>=BUILDING_COLLAGE_CREATE_HOPLITE_FOOD&&info.Gold-bugdetGold>=BUILDING_COLLAGE_CREATE_HOPLITE_GOLD){
+                    BuildingAction(b.SN,BUILDING_COLLAGE_CREATE_HOPLITE);
+                    bugdetMeat+=BUILDING_COLLAGE_CREATE_HOPLITE_FOOD;
+                    bugdetGold+=BUILDING_COLLAGE_CREATE_HOPLITE_GOLD;
+                }
             }
         }
     }
