@@ -18,15 +18,6 @@ static bool towerTargetInRange(int towerDR, int towerUR, int objDR, int objUR)
 //--------------------敌袭应对--------------------
 //全局计时器
 static int timer = 0;
-static bool attackInComing = false;
-static int chariotCnt = 0;
-static int chariotArcherCnt = 0;
-static int coolDownWhenAttacked = 0;
-static bool goHome = false;
-static int priestRetreatTimer = 0;
-static int priestConvertTimer = 0;
-static int priestIdleMoveTimer = 0;              // 祭司闲时"回营地"移动节流(每25帧一次)
-static unordered_map<int, int> allOut_rangedLock;   // 远程兵(SN)当前锁定的目标SN(锁定狙击用)
 //--------------------祭司探图--------------------
 //大本营坐标
 static bool baseFound = false;
@@ -34,37 +25,17 @@ static int baseSN = -1;
 static int baseBlockDR = 50;
 static int baseBlockUR = 50;
 //探图祭祀信息
-static bool priestFound = false;
 static int priestSN = -1;
 static double priestDR = 50;
 static double priestUR = 50;
 static int priestBlockDR = 50;
 static int priestBlockUR = 50;
-static double preDR = -1;
-static double preUR = -1;
 static bool canConvert = false;
-static bool isStill = false;
-static int recordIntervalTimer = 0;
 static int priestState = -1;
-
-static int priestExplore_StuckCnt = 0;      // 连续卡住次数,用来强制换目标
-static double priestExplore_PreDR = -1;     // 卡住检测:上一帧祭司位置
-static double priestExplore_PreUR = -1;
-static int priestExplore_StillTimer = 0;    // 卡住检测计时器
-//探图命令
-static bool needNewTarget = true;
+static int priestWorkObejctSN = -1;
 static int coolDown = 0;
-static bool goingRight = true;
-static int targetBlockDR = 50;
-static int targetBlockUR = 50;
-static int URMaxCnt = 0;
-//探图完成判断
 static bool needExploration = true;
-static bool explorationFinished = false;
-static int totalBlocks = 10000;
-static double exploredRatio = 0;
 //--------------------农民工作--------------------
-static bool isInitializing = true;
 static vector<int>freeFarmers;
 static vector<int>foodFarmers;
 static vector<int>berryFarmers;
@@ -89,11 +60,9 @@ static int craftResearchTimer=0;
 static bool craftUnlocked=false;
 //--------------------发动总攻--------------------
 static int allOut_time=25000;
-static int diri[8]={1,1,0,-1,-1,-1,0,1};
-static int dirj[8]={0,1,1,1,0,-1,-1,-1};
 static int ddr[4]={1,0,-1,0};
 static int dur[4]={0,1,0,-1};
-unordered_map<int,int>allOut_dir;
+static unordered_map<int, int>allOut_rangedLock;
 static bool allOut_started=false;
 static bool allOut_campFounded=false;
 static int allOut_campDR=-1;
@@ -135,6 +104,30 @@ int getVision(int sort){
         return 4;
     }
 }
+bool isRanged(int sort){
+            switch(sort)
+            {
+                case AT_CLUBMAN:
+                case AT_SCOUT:
+                case AT_SWORDSMAN:
+                case AT_CAVALRY:
+                case AT_HOPLITE:
+                case AT_CHARIOT:
+                case AT_BROADSWORDSMAN:
+                return false;
+                break;
+                case AT_SLINGER:
+                case AT_BOWMAN:
+                case AT_IMPROVED:
+                case AT_PRIEST:
+                case AT_CHARIOT_ARCHER:
+                case AT_COMPOSITE_BOWMAN:
+                return true;
+                default:
+                return true;
+                break;
+            }
+        }
 void UsrAI::processData()
 {
     /*while(logo<15){
@@ -144,12 +137,13 @@ void UsrAI::processData()
     }*/
     tagInfo info = getInfo();
     //更新地图信息
+    timer++;
     int bugdetWood=0;
     int bugdetMeat=0;
     int bugdetStone=0;
     int bugdetGold=0;
-    int curMap[100][100] = { 0 };//-1迷雾 0可建造 1资源 2建筑 3单位 4湖泊
-    bool reachable[100][100]={0};
+    int curMap[100][100];//-1迷雾 0可建造 1资源 2建筑 3单位 4湖泊
+    bool reachable[100][100];
     bool hasAnimal=false;
     bool hasBush=false;
     unordered_map<int,int>busyObject;
@@ -291,234 +285,114 @@ void UsrAI::processData()
         priestBlockDR = priestDR / BLOCKSIDELENGTH;
         priestBlockUR = priestUR / BLOCKSIDELENGTH;
         priestState = a.NowState;
+        priestWorkObejctSN = a.WorkObjectSN;
         canConvert=a.ConvertCooldown==0?true:false;
         break;
     }
     //--------------------敌袭应对--------------------
     if (1) {
-        timer++;
-        if (timer == 5600) {
-            attackInComing = true;
-            HumanMove(priestSN, (baseBlockDR - 1) * BLOCKSIDELENGTH, (baseBlockUR - 1) * BLOCKSIDELENGTH);
-        }
-        auto findBestTargetEnemySN = [&]() {
-            int bestTargetEnemySN = -1;
-            double closestD = 1e9;
-            for (tagArmy& enemy : info.enemy_armies) {
-                double d = calDistance(priestDR, priestUR, enemy.DR, enemy.UR);
-                if (d < closestD && d < DIS_PRIEST * BLOCKSIDELENGTH) {
-                    bestTargetEnemySN = enemy.SN;
-                    closestD = d;
+        int enemyAttackingPriestSN=-1;
+        auto getThreatEnemySN=[&](){
+            double bestScore=-1e9;
+            int bestSN=-1;
+            for(tagArmy& e:info.enemy_armies){
+                double score=0;
+                if(e.WorkObjectSN==priestSN){
+                    score+=100;
+                    double d=calDistance(e.DR,e.UR,priestDR,priestUR)/BLOCKSIDELENGTH;
+                    score-=d;
+                }
+                if(e.Sort==AT_CHARIOT||e.Sort==AT_CHARIOT_ARCHER||e.Sort==AT_STONE_THROWER)score+=5;
+                if(score>bestScore){
+                    bestScore=score;
+                    bestSN=e.SN;
                 }
             }
-            return bestTargetEnemySN;
+            enemyAttackingPriestSN=bestSN;
         };
-        if (coolDownWhenAttacked > 0)coolDownWhenAttacked--;
-
-        if (attackInComing && !allOut_started) {
-            auto retreatFree = [&](int dr, int ur) -> bool {
-                if (dr < 0 || dr >= MAP_L || ur < 0 || ur >= MAP_U) return false;
-                if ((*info.theMap)[dr][ur].type == MAPPATTERN_UNKNOWN) return false;
-                if ((*info.theMap)[dr][ur].type == MAPPATTERN_OCEAN) return false;
-                for (const tagResource& r : info.resources) {
-                    if (r.Type == RESOURCE_TREE && dr == r.BlockDR && ur == r.BlockUR) return false;   // 树占1格不能踩
-                }
-                return true;
-            };
-            // ---------- 招降最高优先级:冷却一好,就算在逃/在回家也直接打断去招降 ----------
-            bool wantConvert = false;
-            if (canConvert) {
-                int cSN = -1; double cBest = 1e18; int cDR = -1, cUR = -1;
-                for (const tagArmy& e : info.enemy_armies) {
-                    double dD = calDistance(priestDR, priestUR, e.DR, e.UR);
-                    if (dD < cBest) { cBest = dD; cSN = e.SN; cDR = e.BlockDR; cUR = e.BlockUR; }
-                }
-                for (const tagFarmer& f : info.enemy_farmers) {
-                    double dD = calDistance(priestDR, priestUR, f.DR, f.UR);
-                    if (dD < cBest) { cBest = dD; cSN = f.SN; cDR = f.BlockDR; cUR = f.BlockUR; }
-                }
-                if (cSN != -1) {
-                    wantConvert = true;
-                    goHome = false;                       // 掐掉回家念头
-                    // 施法保护:正在招降动作中绝不再发指令,免得被打断原地重来
-                    bool converting = (priestState == HUMAN_STATE_ATTACKING
-                        || priestState == HUMAN_STATE_WORKING);
-                if (!converting) {
-                    priestConvertTimer++;             // 统一节流:祭司每25帧最多下一条指令
-                    if (cBest <= DIS_PRIEST * BLOCKSIDELENGTH) {
-                        if (priestConvertTimer % 25 == 2) {
-                            HumanAction(priestSN, cSN);   // 射程内招降同样25帧一次,不刷屏
-                        }
+        getThreatEnemySN();
+        auto defendAttack=[&](tagArmy& a){
+            int bestSN=-1;
+            if(enemyAttackingPriestSN!=-1)bestSN=enemyAttackingPriestSN;
+            if(bestSN!=-1)HumanAction(a.SN,bestSN);
+        };
+        auto priestEscape=[&](){
+            double bestScore=-1e9;
+            int bestDR=-1;
+            int bestUR=-1;
+            int startDR=max(priestBlockDR-10,0);
+            int startUR=max(priestBlockUR-10,0);
+            int endDR=min(priestBlockDR+10,100);
+            int endUR=min(priestBlockUR+10,100);
+            for(int dr=startDR;dr<endDR;dr++){
+                for(int ur=startUR;ur<endUR;ur++){
+                    if(!reachable[dr][ur])continue;
+                    double score=0;
+                    for(tagArmy& e:info.armies){
+                        if(calDistance(e.DR,e.UR,priestDR,priestUR)/BLOCKSIDELENGTH>18)continue;
+                        double d=calDistance(dr*BLOCKSIDELENGTH,ur*BLOCKSIDELENGTH,e.DR,e.UR)/BLOCKSIDELENGTH;
+                        score+=d;
                     }
-                else {
-                    // 射程外:打断逃跑/回家,直接追过去再招降(移动每25帧发一次)
-                    if (priestConvertTimer % 25 == 0) {
-                        HumanMove(priestSN, cDR * BLOCKSIDELENGTH,cUR * BLOCKSIDELENGTH);
-                    }
-                }
-                }
-                }
-            }
-            // ---------- 招降没戏(冷却中/没目标)才轮到逃跑/回家兜底 ----------
-            if (!wantConvert) {
-                // cooling down: FLEE from nearest enemy; when ready, wantConvert takes over
-                int nr=-1, nu=-1; double cD2=1e18;
-                for (const tagArmy& e : info.enemy_armies) {
-                    double dd = calDistance(priestDR, priestUR, e.DR, e.UR) / BLOCKSIDELENGTH;
-                    if (dd < cD2) { cD2 = dd; nr = e.BlockDR; nu = e.BlockUR; }
-                }
-                for (const tagFarmer& f : info.enemy_farmers) {
-                    double dd = calDistance(priestDR, priestUR, f.DR, f.UR) / BLOCKSIDELENGTH;
-                    if (dd < cD2) { cD2 = dd; nr = f.BlockDR; nu = f.BlockUR; }
-                }
-                if (nr != -1 && cD2 < 20) {
-                    // cooling + enemy near: run away (throttled)
-                    goHome = false;
-                    if (priestState != HUMAN_STATE_WALKING) {
-                        priestRetreatTimer++;
-                        if (priestRetreatTimer % 60 == 1) {
-                            int rr = (priestBlockDR > nr) ? 1 : ((priestBlockDR < nr) ? -1 : 0);
-                            int uu = (priestBlockUR > nu) ? 1 : ((priestBlockUR < nu) ? -1 : 0);
-                            int mdr = priestBlockDR + rr * 4, mur = priestBlockUR + uu * 4;
-                            if (!retreatFree(mdr, mur)) { mdr = priestBlockDR + rr * 4; mur = priestBlockUR + uu * 4; }
-                            if (retreatFree(mdr, mur)) {
-                                HumanMove(priestSN, mdr * BLOCKSIDELENGTH, mur * BLOCKSIDELENGTH);
-                            }
-                        }
-                    }
-                }
-                else if (priestState == HUMAN_STATE_IDLE) {
-                    bool nearBase = abs(priestBlockDR - baseBlockDR) + abs(priestBlockUR - baseBlockUR) <= 4;
-                    if (!nearBase && !(allOut_campFounded && info.enemy_armies.empty() && info.enemy_farmers.empty())) {
-                        priestIdleMoveTimer++;
-                        if (priestIdleMoveTimer % 25 == 1) {
-                            if (allOut_campFounded) {
-                                int hDR = allOut_campDR - 12, hUR = allOut_campUR - 3;
-                                if (!retreatFree(hDR, hUR)) { hDR = allOut_campDR + 3; hUR = allOut_campUR + 12; }
-                                if (!retreatFree(hDR, hUR)) { hDR = allOut_campDR; hUR = allOut_campUR + 8; }
-                                if (retreatFree(hDR, hUR)) {
-                                    HumanMove(priestSN, hDR * BLOCKSIDELENGTH, hUR * BLOCKSIDELENGTH);
-                                }
-                            } else {
-                                goHome = true;
-                            }
-                        }
+                    if(score>bestScore){
+                        bestScore=score;
+                        bestDR=dr;
+                        bestUR=ur;
                     }
                 }
             }
-        }
-
-        if (!canConvert && coolDownWhenAttacked == 0 && !allOut_started) {
-            coolDownWhenAttacked = 25;
-            int bestDR = -1;
-            int bestUR = -1;
-            double bestScore = -1e9;
-            int startDR = max(priestBlockDR - 15, 2);
-            int startUR = max(priestBlockUR - 15, 2);
-            int endDR = min(priestBlockDR + 15, MAP_L - 2);
-            int endUR = min(priestBlockUR + 15, MAP_U - 2);
-            for (int dr = startDR; dr <= endDR; dr++) {
-                for (int ur = startUR; ur <= endUR; ur++) {
-                    double score = 0;
-                    int weight = 0;
-                    if (curMap[dr][ur] != 0)continue;
-                    for (tagArmy& enemy : info.enemy_armies) {
-                        double dToEnemy = calDistance(priestDR, priestUR, enemy.DR, enemy.UR);
-                        if (dToEnemy > 15 * BLOCKSIDELENGTH)continue;
-                        weight++;
-                        score += abs(dr - enemy.BlockDR) + abs(ur - enemy.BlockUR);
-                    }
-                    if (weight == 0 && !(allOut_campFounded && info.enemy_armies.empty() && info.enemy_farmers.empty()))goHome = true;  // 敌方单位已清时交给祭司转建筑,不回家
-                    if (score > bestScore) {
-                        bestScore = score;
-                        bestDR = dr;
-                        bestUR = ur;
+            if(bestDR==-1||bestUR==-1)return;
+            HumanMove(priestSN,bestDR*BLOCKSIDELENGTH,bestUR*BLOCKSIDELENGTH);
+        };
+        auto priestConvert=[&](){
+            if(priestWorkObejctSN!=-1)return;
+            if(canConvert&&info.enemy_armies.size()!=0){
+                double bestD=1e9;
+                int bestSN=-1;
+                for(tagArmy& e:info.enemy_armies){
+                    double d=calDistance(priestDR,priestUR,e.DR,e.UR);
+                    if(d<bestD){
+                        bestD=d;
+                        bestSN=e.SN;
                     }
                 }
+                if(bestSN!=-1)HumanAction(priestSN,bestSN);
+                return;
             }
-            if (bestDR != -1 && bestUR != -1) {
-                HumanMove(priestSN, bestDR * BLOCKSIDELENGTH, bestUR * BLOCKSIDELENGTH);
+            bool danger=false;
+            for(tagArmy& e:info.enemy_armies){
+                double d=calDistance(e.DR,e.UR,priestDR,priestUR)/BLOCKSIDELENGTH;
+                if(d<18)danger=true;
             }
-        }
-        if (goHome) {
-            goHome = false;
-            HumanMove(priestSN, (baseBlockDR - 2)* BLOCKSIDELENGTH, (baseBlockUR - 2)* BLOCKSIDELENGTH);
-        }
-        auto towerAutoAttack = [&](int towerSN, int towerDR, int towerUR, int project) {
-            if (project != -1)return;
-            int targetSN = -1;
+            if(danger)priestEscape();
+            else if(priestBlockDR!=baseBlockDR-2||priestBlockUR!=baseBlockUR-2)HumanMove(priestSN,(baseBlockDR-2)*BLOCKSIDELENGTH,(baseBlockUR-2)*BLOCKSIDELENGTH);
+        };
+        auto towerAutoAttack = [&](tagBuilding& b) {
+            int targetSN=-1;
             int blood = 1e9;
-            for (tagArmy& enemy : info.enemy_armies) {
-                if (!towerTargetInRange(towerDR, towerUR, enemy.BlockDR, enemy.BlockUR))continue;
-                if (enemy.Blood < blood) {
-                    blood = enemy.Blood;
-                    targetSN = enemy.SN;
+            for (tagArmy& e : info.enemy_armies) {
+                if (!towerTargetInRange(b.BlockDR, b.BlockUR, e.BlockDR, e.BlockUR))continue;
+                if (e.Blood < blood) {
+                    blood = e.Blood;
+                    targetSN = e.SN;
                 }
             }
             if (targetSN != -1) {
-                HumanAction(towerSN, targetSN);
+                HumanAction(b.SN, targetSN);
             }
-            };
-        for (tagArmy& army : info.armies) {
-            if (army.NowState != HUMAN_STATE_IDLE)continue;
-            if (army.Sort == AT_PRIEST)continue;
-            if (!allOut_started && abs(army.BlockDR - baseBlockDR) + abs(army.BlockUR - baseBlockUR) > 20) {
-                HumanMove(army.SN, (baseBlockDR - 3)* BLOCKSIDELENGTH, (baseBlockUR - 3)* BLOCKSIDELENGTH);
+        };
+        if(!allOut_started&&!needExploration){
+            for(tagArmy& a:info.armies){
+                if(a.WorkObjectSN!=-1)continue;
+                if(a.Sort==AT_PRIEST)continue;
+                if((a.SN+timer)%38!=0)continue;
+                defendAttack(a);
             }
-        }
-        for (tagBuilding& b : info.buildings) {
-            if (b.Type != BUILDING_ARROWTOWER)continue;
-            towerAutoAttack(b.SN, b.BlockDR, b.BlockUR, b.Project);
-        }
-    
-        if(1){
-        // ---- 最高优先:正在攻击/锁定祭司的敌人 → 所有空闲兵立刻集火 ----
-            for (tagArmy& enemy : info.enemy_armies) {
-                if (enemy.WorkObjectSN == priestSN) {      // 该敌人当前在打祭司
-                    for (tagArmy& army : info.armies) {
-                        if (army.SN == priestSN) continue;
-                        if (army.NowState != HUMAN_STATE_IDLE)continue;
-                        HumanAction(army.SN, enemy.SN);
-                    }
-                }
+            for(tagBuilding& b:info.buildings){
+                if(b.Type!=BUILDING_ARROWTOWER)continue;
+                if(b.Project!=-1)continue;
+                towerAutoAttack(b);
             }
-            // ---- 第一优先级:威胁祭司的敌人(15 格内)→ 所有空闲兵立刻去打 ----
-            bool priestThreatened = false;
-            for (tagArmy& enemy : info.enemy_armies) {
-                if (abs(enemy.BlockDR - priestBlockDR) + abs(enemy.BlockUR - priestBlockUR) < 15) {
-                    priestThreatened = true;
-                    for (tagArmy& army : info.armies) {
-                        if (army.SN == priestSN)continue;
-                        if (army.NowState != HUMAN_STATE_IDLE)continue;
-                        HumanAction(army.SN, enemy.SN);
-                    }
-                }
-            }
-            // ---- 第二优先级:祭司周围安全了,才分兵守家(敌人靠近家 30 格) ----
-            if (!priestThreatened) {
-                bool hasStoneThrower=false;
-                for(tagArmy& e:info.enemy_armies){
-                    if(e.Sort==AT_STONE_THROWER){
-                        for (tagArmy& a : info.armies) {
-                            if (a.SN == priestSN)continue;
-                            if (a.NowState != HUMAN_STATE_IDLE)continue;
-                            hasStoneThrower=true;
-                            HumanAction(a.SN, e.SN);
-                        }
-                    }
-                }
-                if(!hasStoneThrower){
-                    for (tagArmy& enemy : info.enemy_armies) {
-                        if (abs(enemy.BlockDR - baseBlockDR) + abs(enemy.BlockUR - baseBlockUR) < 30) {
-                            for (tagArmy& army : info.armies) {
-                                if (army.SN == priestSN)continue;
-                                if (army.NowState != HUMAN_STATE_IDLE)continue;
-                                HumanAction(army.SN, enemy.SN);
-                            }
-                        }
-                    }
-                }
-            }
+            if(timer%19==0)priestConvert();
         }
     }
     //--------------------祭司探图--------------------
@@ -535,7 +409,7 @@ void UsrAI::processData()
             }
         }
 
-        if (needExploration&&baseFound&&!attackInComing) {
+        if (needExploration&&baseFound) {
             if(coolDown==0){
                 double bestScore=-1e9;
                 double bestDR=-1;
@@ -544,23 +418,31 @@ void UsrAI::processData()
                     int dr=f.first;
                     int ur=f.second;
                     double score=0;
-                    score-=calDistance(dr*BLOCKSIDELENGTH,ur*BLOCKSIDELENGTH,baseBlockDR*BLOCKSIDELENGTH,baseBlockUR*BLOCKSIDELENGTH)/BLOCKSIDELENGTH;
-                    score-=2*calDistance(dr*BLOCKSIDELENGTH,ur*BLOCKSIDELENGTH,priestDR,priestUR)/BLOCKSIDELENGTH;
+                    double dToBase=calDistance(dr*BLOCKSIDELENGTH,ur*BLOCKSIDELENGTH,baseBlockDR*BLOCKSIDELENGTH,baseBlockUR*BLOCKSIDELENGTH)/BLOCKSIDELENGTH;
+                    double dToSelf=calDistance(dr*BLOCKSIDELENGTH,ur*BLOCKSIDELENGTH,priestDR,priestUR)/BLOCKSIDELENGTH;
+                    score-=dToBase;
+                    score-=1.5*dToSelf;
+                    if(dToBase>70)score-=10000;
                     if(score>bestScore){
                         bestScore=score;
                         bestDR=dr;
                         bestUR=ur;
                     }
                 }
-                if(bestDR!=-1&&bestUR!=-1){
+                if(bestScore<=-10000){
+                    DebugText("太远了,回家");
+                    HumanMove(priestSN,(baseBlockDR-2)*BLOCKSIDELENGTH,(baseBlockUR-2)*BLOCKSIDELENGTH);
+                    needExploration=false;
+                }
+                else if(bestDR!=-1&&bestUR!=-1){
                     HumanMove(priestSN,bestDR*BLOCKSIDELENGTH,bestUR*BLOCKSIDELENGTH);
                     coolDown=50;
                 }
             }
             // 探图结束回基地
-            if(needExploration&&timer>5600){
+            if(timer>5600){
                 needExploration=false;
-                HumanMove(priestSN,(baseBlockDR-1)*BLOCKSIDELENGTH,(baseBlockUR-1)*BLOCKSIDELENGTH);
+                HumanMove(priestSN,(baseBlockDR-2)*BLOCKSIDELENGTH,(baseBlockUR-2)*BLOCKSIDELENGTH);
             }
             // 移动命令冷却
             if (coolDown > 0) {
@@ -574,30 +456,6 @@ void UsrAI::processData()
         int meleeCnt=0;
         bool hasStoneThrower=false;
         int stoneThrowerSN=-1;
-        auto isRanged=[&](int sort){
-            switch(sort)
-            {
-                case AT_CLUBMAN:
-                case AT_SCOUT:
-                case AT_SWORDSMAN:
-                case AT_CAVALRY:
-                case AT_HOPLITE:
-                case AT_CHARIOT:
-                case AT_BROADSWORDSMAN:
-                return false;
-                break;
-                case AT_SLINGER:
-                case AT_BOWMAN:
-                case AT_IMPROVED:
-                case AT_PRIEST:
-                case AT_CHARIOT_ARCHER:
-                case AT_COMPOSITE_BOWMAN:
-                return true;
-                default:
-                return true;
-                break;
-            }
-        };
         if(1){
             for(tagArmy& e:info.enemy_armies){
                 if(!isRanged(e.Sort)){
@@ -625,7 +483,7 @@ void UsrAI::processData()
                 }
             }
             if(dest.first==-1){
-                dest={baseBlockDR-1,baseBlockUR-1};
+                dest={baseBlockDR-2,baseBlockUR-2};
                 DebugText("俺找不到边界,只能往家走了...");
             }
             HumanMove(army.SN,dest.first*BLOCKSIDELENGTH,dest.second*BLOCKSIDELENGTH);
@@ -774,7 +632,7 @@ void UsrAI::processData()
                         }
                     }
                     else{
-                        if(a.Sort==AT_PRIEST&&(meleeCnt>0||priestState==HUMAN_STATE_ATTACKING||!canConvert))continue;
+                        if(a.Sort==AT_PRIEST&&(meleeCnt>0||priestState==HUMAN_STATE_ATTACKING||!canConvert||info.enemy_armies.size()>5))continue;
                         //战车弓兵的攻击间隔是1.5秒,即37.5帧
                         //if((a.Sort==AT_CHARIOT_ARCHER||a.Sort==AT_HOPLITE)&&timer%38!=0)continue;
                         //5秒,125帧
@@ -1057,7 +915,7 @@ void UsrAI::processData()
             for(tagBuilding& b:info.buildings){
                 if(b.Type!=BUILDING_STOCK&&b.Type!=BUILDING_CENTER)continue;
                 double d=calDistance(itsDR,itsUR,b.BlockDR*BLOCKSIDELENGTH,b.BlockUR*BLOCKSIDELENGTH)/BLOCKSIDELENGTH;
-                if(d<15){
+                if(d<12){
                     needNewStock=false;
                     if(b.Percent<100){
                         needHelp=true;
@@ -1450,16 +1308,5 @@ void UsrAI::processData()
                 break;
             }
         }
-        // if(timer>30000&&info.enemy_armies.size()==0){
-        //     for(tagBuilding& b:info.buildings){
-        //         if(b.Type!=BUILDING_COLLAGE)continue;
-        //         if(b.ProjectPercent!=0)continue;
-        //         if(info.Meat-bugdetMeat>=BUILDING_COLLAGE_CREATE_HOPLITE_FOOD&&info.Gold-bugdetGold>=BUILDING_COLLAGE_CREATE_HOPLITE_GOLD){
-        //             BuildingAction(b.SN,BUILDING_COLLAGE_CREATE_HOPLITE);
-        //             bugdetMeat+=BUILDING_COLLAGE_CREATE_HOPLITE_FOOD;
-        //             bugdetGold+=BUILDING_COLLAGE_CREATE_HOPLITE_GOLD;
-        //         }
-        //     }
-        // }
     }
 }
