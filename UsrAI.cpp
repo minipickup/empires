@@ -65,8 +65,8 @@ static int dur[4]={0,1,0,-1};
 static unordered_map<int, int>allOut_rangedLock;
 static bool allOut_started=false;
 static bool allOut_campFounded=false;
-static int allOut_campDR=-1;
-static int allOut_campUR=-1;
+static int allOut_campDR=-1e9;
+static int allOut_campUR=-1e9;
 static int allOut_campSN=-1;
 static unordered_set<int>destroyedTower;
 //--------------------小小功能--------------------
@@ -320,10 +320,10 @@ void UsrAI::processData()
             double bestScore=-1e9;
             int bestDR=-1;
             int bestUR=-1;
-            int startDR=max(priestBlockDR-10,0);
-            int startUR=max(priestBlockUR-10,0);
-            int endDR=min(priestBlockDR+10,100);
-            int endUR=min(priestBlockUR+10,100);
+            int startDR=max(priestBlockDR-8,0);
+            int startUR=max(priestBlockUR-8,0);
+            int endDR=min(priestBlockDR+8,100);
+            int endUR=min(priestBlockUR+8,100);
             for(int dr=startDR;dr<endDR;dr++){
                 for(int ur=startUR;ur<endUR;ur++){
                     if(!reachable[dr][ur])continue;
@@ -794,22 +794,7 @@ void UsrAI::processData()
                         score += (20 - dToGranary);
                         break;
                     }
-                }
-                else if(type==BUILDING_STOCK){
-                    for(tagResource& a:info.resources){
-                        if(a.Type!=RESOURCE_GAZELLE&&a.Type!=RESOURCE_ELEPHANT)continue;
-                        double d=calDistance(a.DR,a.UR,dr*BLOCKSIDELENGTH,ur*BLOCKSIDELENGTH)/BLOCKSIDELENGTH;
-                        if(d>15)continue;
-                        score+=(15-d);
-                    }
-                }
-                else if(type==BUILDING_GRANARY){
-                    for(tagResource& r:info.resources){
-                        if(r.Type!=RESOURCE_BUSH)continue;
-                        double d=calDistance(r.DR,r.UR,dr*BLOCKSIDELENGTH,ur*BLOCKSIDELENGTH)/BLOCKSIDELENGTH;
-                        if(d>15)continue;
-                        score+=(15-d);
-                    }
+                    score+=0.5*calDistance(dr*BLOCKSIDELENGTH,ur*BLOCKSIDELENGTH,baseBlockDR*BLOCKSIDELENGTH,baseBlockUR*BLOCKSIDELENGTH)/BLOCKSIDELENGTH;
                 }
                 else {
                     int dToBase = abs(dr - baseBlockDR)+abs(ur - baseBlockUR);
@@ -859,39 +844,71 @@ void UsrAI::processData()
                 return;
             }
         }
-        };
+    };
+    auto specializedBuild=[&](tagFarmer& f,int type,int rDR,int rUR){
+        double bestScore=-1e9;
+        double bestDR=-1;
+        double bestUR=-1;
+        int startDR=max(0,rDR-10);
+        int startUR=max(0,rUR-10);
+        int endDR=min(100-4,rDR+6);
+        int endUR=min(100-4,rUR+6);
+        for(int dr=startDR;dr<endDR;dr++){
+            for(int ur=startUR;ur<endUR;ur++){
+                bool canBuild=true;
+                for(int i=0;i<4&&canBuild;i++){
+                    for(int j=0;j<4&&canBuild;j++){
+                        if(curMap[dr+i][ur+j]!=0){
+                            canBuild=false;
+                        }
+                    }
+                }
+                if(!canBuild)continue;
+                double score=0;
+                double d=calDistance(dr*BLOCKSIDELENGTH,ur*BLOCKSIDELENGTH,rDR*BLOCKSIDELENGTH,rUR*BLOCKSIDELENGTH)/BLOCKSIDELENGTH;
+                score-=d;
+                if(score>bestScore){
+                    bestScore=score;
+                    bestDR=dr;
+                    bestUR=ur;
+                }
+            }
+        }
+        if(bestDR==-1||bestUR==-1)return;
+        DebugText("有合法位置");
+        HumanBuild(f.SN,type,bestDR,bestUR);
+        if(type==BUILDING_STOCK)bugdetWood+=BUILD_STOCK_WOOD;
+        else if(type==BUILDING_GRANARY)bugdetWood+=BUILD_GRANARY_WOOD;
+    };
     auto hunt=[&](){
         double bestScore=-1e9;
         int bestSN=-1;
-        double itsDR=-1;
-        double itsUR=-1;
-        int stockDR=-1;
-        int stockUR=-1;
+        int itsDR=-1;
+        int itsUR=-1;
         bool needNewStock=true;
         bool needHelp=false;
         int needHelpSN=-1;
-        for(tagBuilding& b:info.buildings){
-            if(b.Type!=BUILDING_STOCK)continue;
-            stockDR=b.BlockDR;
-            stockUR=b.BlockUR;
-            break;
-        }
-        if(timer>18000){
-            for(tagResource& a:info.resources){
-                if(a.Type!=RESOURCE_ELEPHANT&&a.Type!=RESOURCE_GAZELLE)continue;
-                bool OK=false;
-                for(int i=-1;i<=1&&!OK;i++){
-                    for(int j=-1;j<=1;j++){
-                        if(a.BlockDR+i<0||a.BlockDR+i>=100||
-                            a.BlockUR+j<0||a.BlockUR+j>=100)continue;
-                        if(curMap[a.BlockDR+i][a.BlockUR+j]==0)OK=true;
-                    }
+        vector<int>*farmers;
+        if(timer>18000)farmers=&freeFarmers;
+        else farmers=&hunterFarmers;
+
+        for(tagResource& a:info.resources){
+            if(a.Type!=RESOURCE_ELEPHANT&&a.Type!=RESOURCE_GAZELLE)continue;
+            if(timer<18000&&a.Type==RESOURCE_ELEPHANT)continue;
+            bool OK=false;
+            for(int i=-1;i<=1&&!OK;i++){
+                for(int j=-1;j<=1;j++){
+                    if(a.BlockDR+i<0||a.BlockDR+i>=100||
+                        a.BlockUR+j<0||a.BlockUR+j>=100)continue;
+                    if(curMap[a.BlockDR+i][a.BlockUR+j]==0)OK=true;
                 }
-                if(!OK)continue;
-                for(tagBuilding& b:info.buildings){
-                    if(b.Type!=BUILDING_STOCK&&b.Type!=BUILDING_CENTER)continue;
-                    double score=0;
-                    double d=calDistance(a.DR,a.UR,b.BlockDR*BLOCKSIDELENGTH,b.BlockUR*BLOCKSIDELENGTH)/BLOCKSIDELENGTH;
+            }
+            if(!OK)continue;
+            for(tagBuilding& b:info.buildings){
+                if(b.Type!=BUILDING_STOCK&&b.Type!=BUILDING_CENTER)continue;
+                double score=0;
+                double d=calDistance(a.DR,a.UR,b.BlockDR*BLOCKSIDELENGTH,b.BlockUR*BLOCKSIDELENGTH)/BLOCKSIDELENGTH;
+                if(timer>18000){
                     if(a.Type==RESOURCE_ELEPHANT){
                         score-=(d+5);
                         if(busyObject.count(a.SN)){
@@ -901,61 +918,10 @@ void UsrAI::processData()
                     }
                     if(a.Type==RESOURCE_GAZELLE){
                         score-=d;
-                        if(busyObject.count(a.SN)&&busyObject[a.SN]>2)score-=15;
-                    }
-                    if(score>bestScore){
-                        bestScore=score;
-                        bestSN=a.SN;
-                        itsDR=a.DR;
-                        itsUR=a.UR;
+                        if(busyObject.count(a.SN)&&busyObject[a.SN]>1)score-=15;
                     }
                 }
-            }
-            if(bestSN==-1||itsDR==-1||itsUR==-1)return;
-            for(tagBuilding& b:info.buildings){
-                if(b.Type!=BUILDING_STOCK&&b.Type!=BUILDING_CENTER)continue;
-                double d=calDistance(itsDR,itsUR,b.BlockDR*BLOCKSIDELENGTH,b.BlockUR*BLOCKSIDELENGTH)/BLOCKSIDELENGTH;
-                if(d<12){
-                    needNewStock=false;
-                    if(b.Percent<100){
-                        needHelp=true;
-                        needHelpSN=b.SN;
-                    }
-                    break;
-                }
-            }
-            for(int sn:freeFarmers){
-                for(tagFarmer& f:info.farmers){
-                    if(f.SN!=sn)continue;
-                    if(f.NowState!=HUMAN_STATE_IDLE)break;
-                    if(needNewStock&&info.Wood-bugdetWood>=BUILD_STOCK_WOOD){
-                        build(BUILDING_STOCK);
-                        bugdetWood+=BUILD_STOCK_WOOD;
-                    }else if(needHelp){
-                        HumanAction(sn,needHelpSN);
-                    }
-                    else{
-                        HumanAction(sn,bestSN);
-                    }
-                    return;
-                }
-            }
-        }else{
-            for(tagResource& a:info.resources){
-                if(a.Type!=RESOURCE_ELEPHANT&&a.Type!=RESOURCE_GAZELLE)continue;
-                bool OK=false;
-                for(int i=-1;i<=1&&!OK;i++){
-                    for(int j=-1;j<=1;j++){
-                        if(a.BlockDR+i<0||a.BlockDR+i>=100||
-                            a.BlockUR+j<0||a.BlockUR+j>=100)continue;
-                        if(curMap[a.BlockDR+i][a.BlockUR+j]==0)OK=true;
-                    }
-                }
-                if(!OK)continue;
-                for(tagBuilding& b:info.buildings){
-                    if(b.Type!=BUILDING_STOCK&&b.Type!=BUILDING_CENTER)continue;
-                    double score=0;
-                    double d=calDistance(a.DR,a.UR,b.BlockDR*BLOCKSIDELENGTH,b.BlockUR*BLOCKSIDELENGTH)/BLOCKSIDELENGTH;
+                else{
                     if(a.Type==RESOURCE_ELEPHANT){
                         score-=(d+5);
                         if(hunterFarmers.size()<5)score-=100;
@@ -963,44 +929,44 @@ void UsrAI::processData()
                     }
                     if(a.Type==RESOURCE_GAZELLE){
                         score-=d;
-                        if(busyObject.count(a.SN)&&busyObject[a.SN]>2)score-=15;
+                        if(busyObject.count(a.SN)&&busyObject[a.SN]>1)score-=15;
                     }
-                    if(score>bestScore){
-                        bestScore=score;
-                        bestSN=a.SN;
-                        itsDR=a.DR;
-                        itsUR=a.UR;
-                    }
+                }
+                if(score>bestScore){
+                    bestScore=score;
+                    bestSN=a.SN;
+                    itsDR=a.BlockDR;
+                    itsUR=a.BlockUR;
                 }
             }
-            if(bestSN==-1||itsDR==-1||itsUR==-1)return;
-            for(tagBuilding& b:info.buildings){
-                if(b.Type!=BUILDING_STOCK&&b.Type!=BUILDING_CENTER)continue;
-                double d=calDistance(itsDR,itsUR,b.BlockDR*BLOCKSIDELENGTH,b.BlockUR*BLOCKSIDELENGTH)/BLOCKSIDELENGTH;
-                if(d<15){
-                    needNewStock=false;
-                    if(b.Percent<100){
-                        needHelp=true;
-                        needHelpSN=b.SN;
-                    }
-                    break;
+        }
+        if(bestSN==-1||itsDR==-1||itsUR==-1)return;
+        for(tagBuilding& b:info.buildings){
+            if(b.Type!=BUILDING_STOCK&&b.Type!=BUILDING_CENTER)continue;
+            double d=calDistance(itsDR*BLOCKSIDELENGTH,itsUR*BLOCKSIDELENGTH,b.BlockDR*BLOCKSIDELENGTH,b.BlockUR*BLOCKSIDELENGTH)/BLOCKSIDELENGTH;
+            if(d<15){
+                needNewStock=false;
+                if(b.Percent<100){
+                    needHelp=true;
+                    needHelpSN=b.SN;
                 }
+                break;
             }
-            for(int sn:hunterFarmers){
-                for(tagFarmer& f:info.farmers){
-                    if(f.SN!=sn)continue;
-                    if(f.NowState!=HUMAN_STATE_IDLE)break;
-                    if(needNewStock&&info.Wood-bugdetWood>=BUILD_STOCK_WOOD){
-                        build(BUILDING_STOCK);
-                        bugdetWood+=BUILD_STOCK_WOOD;
-                    }else if(needHelp){
-                        HumanAction(sn,needHelpSN);
-                    }
-                    else{
-                        HumanAction(sn,bestSN);
-                    }
-                    return;
+        }
+        for(int sn:*farmers){
+            for(tagFarmer& f:info.farmers){
+                if(f.SN!=sn)continue;
+                if(f.NowState!=HUMAN_STATE_IDLE)break;
+                if(needNewStock&&info.Wood-bugdetWood>=BUILD_STOCK_WOOD){
+                    specializedBuild(f,BUILDING_STOCK,itsDR,itsUR);
                 }
+                else if(needHelp){
+                    HumanAction(sn,needHelpSN);
+                }
+                else{
+                    HumanAction(sn,bestSN);
+                }
+                return;
             }
         }
     };
@@ -1022,15 +988,15 @@ void UsrAI::processData()
                 if(d<bestD){
                     bestD=d;
                     bestSN=r.SN;
-                    itsDR=r.DR;
-                    itsUR=r.UR;
+                    itsDR=r.BlockDR;
+                    itsUR=r.BlockUR;
                 }
             }
         }
         if(bestSN==-1||itsDR==-1||itsUR==-1)return;
         for(tagBuilding& b:info.buildings){
             if(b.Type!=BUILDING_GRANARY&&b.Type!=BUILDING_CENTER)continue;
-            double d=calDistance(itsDR,itsUR,b.BlockDR*BLOCKSIDELENGTH,b.BlockUR*BLOCKSIDELENGTH)/BLOCKSIDELENGTH;
+            double d=calDistance(itsDR*BLOCKSIDELENGTH,itsUR*BLOCKSIDELENGTH,b.BlockDR*BLOCKSIDELENGTH,b.BlockUR*BLOCKSIDELENGTH)/BLOCKSIDELENGTH;
             if(d<15){
                 needNewGranary=false;
                 if(b.Percent<100){
@@ -1048,8 +1014,7 @@ void UsrAI::processData()
                 if(f.SN!=sn)continue;
                 if(f.NowState!=HUMAN_STATE_IDLE)break;
                 if(needNewGranary&&info.Wood-bugdetWood>=BUILD_GRANARY_WOOD){
-                    build(BUILDING_GRANARY);
-                    bugdetWood+=BUILD_GRANARY_WOOD;
+                    specializedBuild(f,BUILDING_GRANARY,itsDR,itsUR);
                 }else if(needHelp){
                     HumanAction(sn,needHelpSN);
                 }else{
