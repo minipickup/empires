@@ -40,7 +40,7 @@ static vector<int>freeFarmers;
 static vector<int>foodFarmers;
 static vector<int>berryFarmers;
 static vector<int>woodFarmers;
-static vector<int>stoneFarmers;
+static vector<int>goldFarmers;
 static vector<int>buildingFarmers;
 static vector<int>hunterFarmers;
 static vector<int>farmFarmers;
@@ -241,6 +241,7 @@ void UsrAI::processData()
 
         for(tagResource& a:info.resources){
             if(a.Type!=RESOURCE_ELEPHANT&&a.Type!=RESOURCE_GAZELLE)continue;
+            if(a.Type==RESOURCE_ELEPHANT&&timer<18000)continue;
             bool OK=false;
             for(int i=-1;i<=1&&!OK;i++){
                 for(int j=-1;j<=1;j++){
@@ -645,16 +646,17 @@ void UsrAI::processData()
     }
     //--------------------农民工作--------------------
     if (1) {
-    //分配工作,暂定 浆果:木头:建造:打猎:农田:石头=2:(3+8):2:6:2:1
+    //分配工作,暂定 浆果:木头:建造:打猎:农田:金矿=3:(3+8):1:7:2:0
+    //暂定不挖金矿
     auto classify = [&](int farmerSN) {
         static int mark = 0;
-        if (mark % 24 <= 1){berryFarmers.push_back(farmerSN);freeFarmers.push_back(farmerSN);foodFarmers.push_back(farmerSN);}
-        else if (mark % 24 <= 4){woodFarmers.push_back(farmerSN);freeFarmers.push_back(farmerSN);}
+        if (mark % 24 <= 2){berryFarmers.push_back(farmerSN);freeFarmers.push_back(farmerSN);foodFarmers.push_back(farmerSN);}
+        else if (mark % 24 <= 5){woodFarmers.push_back(farmerSN);freeFarmers.push_back(farmerSN);}
         else if (mark % 24 <= 6){buildingFarmers.push_back(farmerSN);freeFarmers.push_back(farmerSN);}
-        else if (mark % 24 <= 12){hunterFarmers.push_back(farmerSN);freeFarmers.push_back(farmerSN);foodFarmers.push_back(farmerSN);}
-        else if (mark % 24 <= 20){woodFarmers.push_back(farmerSN);freeFarmers.push_back(farmerSN);}
-        else if (mark % 24 <= 22)farmFarmers.push_back(farmerSN);
-        else {stoneFarmers.push_back(farmerSN);freeFarmers.push_back(farmerSN);}
+        else if (mark % 24 <= 13){hunterFarmers.push_back(farmerSN);freeFarmers.push_back(farmerSN);foodFarmers.push_back(farmerSN);}
+        else if (mark % 24 <= 21){woodFarmers.push_back(farmerSN);freeFarmers.push_back(farmerSN);}
+        else if (mark % 24 <= 23)farmFarmers.push_back(farmerSN);
+        else {goldFarmers.push_back(farmerSN);freeFarmers.push_back(farmerSN);}
         mark++;
         };
 
@@ -676,7 +678,7 @@ void UsrAI::processData()
             }
         }
         if (!classified) {
-            for (int id : stoneFarmers) {
+            for (int id : goldFarmers) {
                 if (id == SN) {
                     classified = true;
                     break;
@@ -712,48 +714,38 @@ void UsrAI::processData()
         }
     }
 
-    auto assignTask = [&](vector<int>farmers, int type) {
+    auto chopAndDig=[&](vector<int>&farmers,int type){
         for (int SN : farmers) {
-            for (tagFarmer& farmer : info.farmers) {
-                if (farmer.SN != SN)continue;
-                if(farmer.NowState!=HUMAN_STATE_IDLE)continue;
-                int bestResourceSN = -1;
-                double minDist = 1e18;
-                double dist = 1e18;
-                for (tagResource& resource : info.resources) {
-                    if (resource.Type != type)continue;
-                    if(type==RESOURCE_TREE){
-                        if(busyObject.count(resource.SN))continue;
-                        bool OK=false;
-                        for(int i=-1;i<=1&&!OK;i++){
-                            for(int j=-1;j<=1;j++){
-                                if(resource.BlockDR+i<0||resource.BlockDR+i>=100||
-                                    resource.BlockUR+j<0||resource.BlockUR+j>=100)continue;
-                                if(curMap[resource.BlockDR+i][resource.BlockUR+j]==0)OK=true;
-                            }
+            for (tagFarmer& f : info.farmers) {
+                if (f.SN != SN)continue;
+                if(f.NowState!=HUMAN_STATE_IDLE)continue;
+                double bestScore=-1e9;
+                int bestSN=-1;
+                for (tagResource& r : info.resources) {
+                    if (r.Type != type)continue;
+                    if(busyObject.count(r.SN))continue;
+                    bool OK=false;
+                    for(int dr=max(r.BlockDR-1,0);dr<=min(r.BlockDR+1,99)&&!OK;dr++){
+                        for(int ur=max(r.BlockUR-1,0);ur<=min(r.BlockUR+1,99)&&!OK;ur++){
+                            if(curMap[dr][ur]==0)OK=true;
                         }
-                        if(!OK)continue;
                     }
-                    if(resource.Type==RESOURCE_TREE){
-                        for(tagBuilding& b:info.buildings){
-                            if(b.Type!=BUILDING_STOCK)continue;
-                            dist=calDistance(b.BlockDR*BLOCKSIDELENGTH,b.BlockUR*BLOCKSIDELENGTH,resource.DR,resource.UR);
+                    if(!OK)continue;
+                    for(tagBuilding& b:info.buildings){
+                        double score=0;
+                        if(b.Type!=BUILDING_STOCK)continue;
+                        double d=calDistance(b.BlockDR*BLOCKSIDELENGTH,b.BlockUR*BLOCKSIDELENGTH,r.DR,r.UR)/BLOCKSIDELENGTH;
+                        score-=d;
+                        double dToSelf=calDistance(f.DR,f.UR,r.DR,r.UR)/BLOCKSIDELENGTH;
+                        score-=dToSelf;
+                        if(score>bestScore){
+                            bestScore=score;
+                            bestSN=r.SN;
                         }
-                    }else if(resource.Type==RESOURCE_BUSH){
-                        for(tagBuilding& b:info.buildings){
-                            if(b.Type!=BUILDING_GRANARY)continue;
-                            dist=calDistance(b.BlockDR*BLOCKSIDELENGTH,b.BlockUR*BLOCKSIDELENGTH,resource.DR,resource.UR);
-                        }
-                    }else {
-                        dist = calDistance(farmer.DR, farmer.UR, resource.DR, resource.UR);
-                    }
-                    if (dist < minDist) {
-                        minDist = dist;
-                        bestResourceSN = resource.SN;
                     }
                 }
-                if (bestResourceSN != -1) {
-                    HumanAction(farmer.SN, bestResourceSN);
+                if (bestSN != -1) {
+                    HumanAction(f.SN, bestSN);
                 }
                 break;
             }
@@ -880,7 +872,7 @@ void UsrAI::processData()
         if(type==BUILDING_STOCK)bugdetWood+=BUILD_STOCK_WOOD;
         else if(type==BUILDING_GRANARY)bugdetWood+=BUILD_GRANARY_WOOD;
     };
-    auto hunt=[&](){
+    auto hunt=[&](vector<int>farmers){
         double bestScore=-1e9;
         int bestSN=-1;
         int itsDR=-1;
@@ -888,9 +880,6 @@ void UsrAI::processData()
         bool needNewStock=true;
         bool needHelp=false;
         int needHelpSN=-1;
-        vector<int>*farmers;
-        if(timer>18000)farmers=&freeFarmers;
-        else farmers=&hunterFarmers;
 
         for(tagResource& a:info.resources){
             if(a.Type!=RESOURCE_ELEPHANT&&a.Type!=RESOURCE_GAZELLE)continue;
@@ -944,7 +933,7 @@ void UsrAI::processData()
         for(tagBuilding& b:info.buildings){
             if(b.Type!=BUILDING_STOCK&&b.Type!=BUILDING_CENTER)continue;
             double d=calDistance(itsDR*BLOCKSIDELENGTH,itsUR*BLOCKSIDELENGTH,b.BlockDR*BLOCKSIDELENGTH,b.BlockUR*BLOCKSIDELENGTH)/BLOCKSIDELENGTH;
-            if(d<15){
+            if(d<12){
                 needNewStock=false;
                 if(b.Percent<100){
                     needHelp=true;
@@ -953,7 +942,7 @@ void UsrAI::processData()
                 break;
             }
         }
-        for(int sn:*farmers){
+        for(int sn:farmers){
             for(tagFarmer& f:info.farmers){
                 if(f.SN!=sn)continue;
                 if(f.NowState!=HUMAN_STATE_IDLE)break;
@@ -970,7 +959,7 @@ void UsrAI::processData()
             }
         }
     };
-    auto gatherBerry=[&](){
+    auto gatherBerry=[&](vector<int>farmers){
         int bestSN=-1;
         double bestD=1e9;
         int itsDR=-1;
@@ -1006,10 +995,7 @@ void UsrAI::processData()
                 break;
             }
         }
-        vector<int>*farmers=&berryFarmers;
-        if(!hasAnimal)farmers=&foodFarmers;
-        if(timer>18000)farmers=&freeFarmers;
-        for(int sn:*farmers){
+        for(int sn:farmers){
             for(tagFarmer& f:info.farmers){
                 if(f.SN!=sn)continue;
                 if(f.NowState!=HUMAN_STATE_IDLE)break;
@@ -1025,37 +1011,23 @@ void UsrAI::processData()
         }
     };
     if(timer>18000){
-        //if(timer>30000&&info.enemy_armies.size()==0){
-        if(0){
-            if(info.Gold*6<info.Meat*4||(!hasAnimal&&!hasBush)){
-                assignTask(freeFarmers,RESOURCE_GOLD);
-            }else{
-                if(hasAnimal)hunt();
-                else if(hasBush){
-                    gatherBerry();
-                }
-            }
-        }
-        else {
-            if(info.Wood*4<info.Meat*7||info.Wood<300||(!hasAnimal&&!hasBush)){
-                assignTask(freeFarmers,RESOURCE_TREE);
-            }else{
-                if(hasAnimal)hunt();
-                else if(hasBush){
-                    gatherBerry();
-                }
+        if(info.Wood*4<info.Meat*7||info.Wood<300||(!hasAnimal&&!hasBush)){
+            chopAndDig(freeFarmers,RESOURCE_TREE);
+        }else{
+            if(hasAnimal)hunt(freeFarmers);
+            else if(hasBush){
+                gatherBerry(freeFarmers);
             }
         }
     }
     else {
-        if(hasAnimal)hunt();
+        if(hasAnimal)hunt(hunterFarmers);
         else if(hasBush){
-            assignTask(hunterFarmers,RESOURCE_BUSH);
+            gatherBerry(hunterFarmers);
         }
+        gatherBerry(berryFarmers);
+        chopAndDig(woodFarmers,RESOURCE_TREE);
     }
-    gatherBerry();
-    if(timer<20000)assignTask(woodFarmers, RESOURCE_TREE);
-    if(timer<18000)assignTask(stoneFarmers, RESOURCE_GOLD);
     //盖建筑
     if(1){
         bool turnForMe=true;
