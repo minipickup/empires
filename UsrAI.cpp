@@ -283,17 +283,16 @@ void UsrAI::processData()
         }
     }
     //更新祭祀信息
-    for (const tagArmy& army : info.armies) {
-        if (army.SN == priestSN) {
-            priestDR = army.DR;
-            priestUR = army.UR;
-            priestBlockDR = priestDR / BLOCKSIDELENGTH;
-            priestBlockUR = priestUR / BLOCKSIDELENGTH;
-            priestState = army.NowState;
-            if (army.ConvertCooldown == 0)canConvert = true;
-            else canConvert = false;
-            break;
-        }
+    for (tagArmy& a : info.armies) {
+        if(a.Sort!=AT_PRIEST)continue;
+        priestSN=a.SN;
+        priestDR = a.DR;
+        priestUR = a.UR;
+        priestBlockDR = priestDR / BLOCKSIDELENGTH;
+        priestBlockUR = priestUR / BLOCKSIDELENGTH;
+        priestState = a.NowState;
+        canConvert=a.ConvertCooldown==0?true:false;
+        break;
     }
     //--------------------敌袭应对--------------------
     if (1) {
@@ -526,200 +525,47 @@ void UsrAI::processData()
     if (1) {
         // 找大本营
         if (!baseFound) {
-            for (const tagBuilding& building : info.buildings) {
-                if (building.Type == BUILDING_CENTER) {
-                    baseSN = building.SN;
-                    baseBlockDR = building.BlockDR;
-                    baseBlockUR = building.BlockUR;
+            for (tagBuilding& b : info.buildings) {
+                if (b.Type == BUILDING_CENTER) {
+                    baseSN = b.SN;
+                    baseBlockDR = b.BlockDR;
+                    baseBlockUR = b.BlockUR;
                     baseFound = true;
                 }
             }
         }
 
-        // 祭司探图定时:5分半(8250 tick)~8分钟(12000 tick)为强制探图窗口,
-        // 不受敌袭标志(attackInComing≈3.7分钟就置真)阻断;8分半后停探回家。
-        if (!allOut_started && baseFound) {
-            // if (timer >= 8250 && timer < 12000) {
-            //     needExploration = true;                 // 定时探图窗口内持续探图
-            // }
-            if (timer >= 12000) {
-                needExploration = false;                // 8分钟后停探
-                if (priestState == HUMAN_STATE_IDLE &&
-                    abs(priestBlockDR - baseBlockDR) + abs(priestBlockUR - baseBlockUR) > 4) {
-                    HumanMove(priestSN, (baseBlockDR - 1) * BLOCKSIDELENGTH,
-                                         (baseBlockUR - 1) * BLOCKSIDELENGTH);   // 回家
+        if (needExploration&&baseFound&&!attackInComing) {
+            if(coolDown==0){
+                double bestScore=-1e9;
+                double bestDR=-1;
+                double bestUR=-1;
+                for(auto f:frontier){
+                    int dr=f.first;
+                    int ur=f.second;
+                    double score=0;
+                    score-=calDistance(dr*BLOCKSIDELENGTH,ur*BLOCKSIDELENGTH,baseBlockDR*BLOCKSIDELENGTH,baseBlockUR*BLOCKSIDELENGTH)/BLOCKSIDELENGTH;
+                    score-=2*calDistance(dr*BLOCKSIDELENGTH,ur*BLOCKSIDELENGTH,priestDR,priestUR)/BLOCKSIDELENGTH;
+                    if(score>bestScore){
+                        bestScore=score;
+                        bestDR=dr;
+                        bestUR=ur;
+                    }
+                }
+                if(bestDR!=-1&&bestUR!=-1){
+                    HumanMove(priestSN,bestDR*BLOCKSIDELENGTH,bestUR*BLOCKSIDELENGTH);
+                    coolDown=50;
                 }
             }
-        }
-
-        bool exploreWindow = false;
-        if (needExploration && (!attackInComing || exploreWindow)) {
-            // 找祭司(优先空闲的,别跟敌袭抢人)
-            if (!priestFound) {
-                for (const tagArmy& army : info.armies) {
-                    if (army.Sort != AT_PRIEST) continue;
-                    if (army.NowState != HUMAN_STATE_IDLE) continue;
-                    priestSN = army.SN;
-                    priestFound = true;
-                }
+            // 探图结束回基地
+            if(needExploration&&timer>5600){
+                needExploration=false;
+                HumanMove(priestSN,(baseBlockDR-1)*BLOCKSIDELENGTH,(baseBlockUR-1)*BLOCKSIDELENGTH);
             }
-
-            if (priestFound && baseFound && info.theMap != nullptr) {
-                // ----- 小工具 -----
-                // 这块是不是已经探索(不是 Unknown)
-                auto explore_isKnown = [&](int dr, int ur) -> bool {
-                    if (dr < 0 || dr >= MAP_L || ur < 0 || ur >= MAP_U) return false;
-                    return (*info.theMap)[dr][ur].type != MAPPATTERN_UNKNOWN;
-                };
-                // 这块的上下左右有没有贴着没探索的格子
-                auto explore_touchUnknown = [&](int dr, int ur) -> bool {
-                    const int dx[4] = { 1, -1, 0, 0 };
-                    const int dy[4] = { 0, 0, 1, -1 };
-                    for (int i = 0; i < 4; i++) {
-                        int nd = dr + dx[i], nu = ur + dy[i];
-                        if (nd < 0 || nd >= MAP_L || nu < 0 || nu >= MAP_U) continue;
-                        if ((*info.theMap)[nd][nu].type == MAPPATTERN_UNKNOWN) return true;
-                    }
-                    return false;
-                };
-                // 建筑占地边长
-                auto explore_buildSize = [](int type) -> int {
-                    switch (type) {
-                    case BUILDING_HOME: return 2;
-                    case BUILDING_GRANARY: return 3;
-                    case BUILDING_STOCK: return 3;
-                    case BUILDING_FARM: return 3;
-                    case BUILDING_ARROWTOWER: return 2;
-                    case BUILDING_CENTER: return 3;
-                    case BUILDING_ARMYCAMP: return 3;
-                    case BUILDING_MARKET: return 3;
-                    case BUILDING_STABLE: return 3;
-                    case BUILDING_RANGE: return 3;
-                    case BUILDING_DOCK: return 3;
-                    case BUILDING_SIEGE: return 3;
-                    case BUILDING_COLLAGE: return 3;
-                    default: return 1;
-                    }
-                };
-
-                // ----- 卡住检测:位置连续不变就强制换目标(防动态堵路) -----
-                priestExplore_StillTimer++;
-                if (priestExplore_StillTimer >= 25) {
-                    priestExplore_StillTimer = 0;
-                    if (priestExplore_PreDR == priestDR && priestExplore_PreUR == priestUR) {
-                        priestExplore_StuckCnt++;
-                        if (priestExplore_StuckCnt >= 3) {
-                            priestExplore_StuckCnt = 0;
-                            needNewTarget = true;
-                        }
-                    }
-                    else {
-                        priestExplore_StuckCnt = 0;
-                    }
-                    priestExplore_PreDR = priestDR;
-                    priestExplore_PreUR = priestUR;
-                }
-
-                // 祭司站定了(到达/把活干完)=> 派新任务
-                if (priestState == HUMAN_STATE_IDLE && coolDown == 0) {
-                    needNewTarget = true;
-                }
-
-                if (needNewTarget && coolDown == 0) {
-                    needNewTarget = false;
-
-                    // ----- 建立障碍表:海洋 / 建筑占地 / 树 / 矿 -----
-                    vector<vector<char>> blocked(MAP_L, vector<char>(MAP_U, 0));
-                    for (int dr = 0; dr < MAP_L; dr++) {
-                        for (int ur = 0; ur < MAP_U; ur++) {
-                            if ((*info.theMap)[dr][ur].type == MAPPATTERN_OCEAN)
-                                blocked[dr][ur] = 1;
-                        }
-                    }
-                    for (const tagBuilding& b : info.buildings) {
-                        int sz = explore_buildSize(b.Type);
-                        for (int i = 0; i < sz; i++) {
-                            for (int j = 0; j < sz; j++) {
-                                if (b.BlockDR + i < MAP_L && b.BlockUR + j < MAP_U)
-                                    blocked[b.BlockDR + i][b.BlockUR + j] = 1;
-                            }
-                        }
-                    }
-                    for (const tagResource& r : info.resources) {
-                        if (r.Type == RESOURCE_TREE) {
-                            blocked[r.BlockDR][r.BlockUR] = 1;
-                        }
-                        else if (r.Type == RESOURCE_STONE || r.Type == RESOURCE_GOLD) {
-                            for (int i = 0; i < 2 && r.BlockDR + i < MAP_L; i++)
-                                for (int j = 0; j < 2 && r.BlockUR + j < MAP_U; j++)
-                                    blocked[r.BlockDR + i][r.BlockUR + j] = 1;
-                        }
-                    }
-                    // 大本营自己必须是可走格(它脚下被建筑遮住了)
-                    if (baseBlockDR >= 0 && baseBlockDR < MAP_L &&
-                        baseBlockUR >= 0 && baseBlockUR < MAP_U)
-                        blocked[baseBlockDR][baseBlockUR] = 0;
-
-                    // ----- 从大本营 BFS 整个"已探索且能走到"的连通域 -----
-                    vector<vector<int>> dist(MAP_L, vector<int>(MAP_U, -1));
-                    queue<pair<int, int>> q;
-                    dist[baseBlockDR][baseBlockUR] = 0;
-                    q.push({ baseBlockDR, baseBlockUR });
-                    const int dx[4] = { 1, -1, 0, 0 };
-                    const int dy[4] = { 0, 0, 1, -1 };
-
-                    int bestDist = 0x3f3f3f3f;
-                    int bestDR = -1, bestUR = -1;
-                    while (!q.empty()) {
-                        int dr = q.front().first, ur = q.front().second;
-                        q.pop();
-
-                        if (explore_touchUnknown(dr, ur)) {
-                            // 这是一个"推进入口":离基地越近越先探,
-                            // 顺带避开祭司脚底下和上一个目标
-                            int d = dist[dr][ur];
-                            if (abs(dr - priestBlockDR) + abs(ur - priestBlockUR) <= 1) d += 100;
-                            if (dr == targetBlockDR && ur == targetBlockUR) d += 50;
-                            if (d < bestDist) {
-                                bestDist = d;
-                                bestDR = dr;
-                                bestUR = ur;
-                            }
-                        }
-                        for (int i = 0; i < 4; i++) {
-                            int nd = dr + dx[i], nu = ur + dy[i];
-                            if (nd < 0 || nd >= MAP_L || nu < 0 || nu >= MAP_U) continue;
-                            if (blocked[nd][nu]) continue;          // 海/建筑/树/矿
-                            if (dist[nd][nu] != -1) continue;
-                            dist[nd][nu] = dist[dr][ur] + 1;
-                            q.push({ nd, nu });
-                        }
-                    }
-
-                    if (bestDR != -1) {
-                        // 目标在已探索连通域内 => 寻路必然成功,不会卡死
-                        targetBlockDR = bestDR;
-                        targetBlockUR = bestUR;
-                        HumanMove(priestSN, targetBlockDR * BLOCKSIDELENGTH,
-                                          targetBlockUR * BLOCKSIDELENGTH);
-                        coolDown = 40;   // 移动指令冷却,防止指令刷屏
-                    }
-                    else {
-                        // 基地所在连通域已没有可推进的入口 => 周边探完,收工
-                        needExploration = false;
-                    }
-                }
+            // 移动命令冷却
+            if (coolDown > 0) {
+                coolDown--;
             }
-        }
-
-        // 探图结束回基地
-        if (!needExploration && !explorationFinished) {
-            explorationFinished = true;
-            HumanMove(priestSN, baseBlockDR * BLOCKSIDELENGTH, baseBlockUR * BLOCKSIDELENGTH);
-        }
-        // 移动命令冷却
-        if (coolDown > 0) {
-            coolDown--;
         }
     }
     //--------------------发动总攻--------------------
@@ -848,34 +694,6 @@ void UsrAI::processData()
             }
             /////////////////////////////////////
             if((locked==-1||!valid)&&!danger){
-                // ================= 诊断块:进重选分支时打印锁失效现场 =================
-{
-    char dbg[256];
-    bool targetGone=true;
-    double lockD=-1;
-    for(tagArmy& e:info.enemy_armies){
-        if(e.SN==locked){
-            targetGone=false;
-            lockD=calDistance(army.DR,army.UR,e.DR,e.UR)/BLOCKSIDELENGTH;
-        }
-    }
-    snprintf(dbg,sizeof(dbg),"【锁】t=%d 兵%d 锁=%d | 锁目标仍在场=%d 锁距=%.1f格 | 敌%zu个 | danger=%d",
-             (int)timer, army.SN, locked, (int)(!targetGone), lockD,
-             info.enemy_armies.size(), (int)danger);
-    DebugText(dbg);
-
-    int shown=0;
-    for(tagArmy& e:info.enemy_armies){
-        if(shown>=3)break;
-        double dd=calDistance(army.DR,army.UR,e.DR,e.UR)/BLOCKSIDELENGTH;
-        snprintf(dbg,sizeof(dbg),"   敌SN=%d 距=%.1f格 vis=%d %s",
-                 e.SN, dd, (int)visableBlock[e.BlockDR][e.BlockUR],
-                 dd<=9.0 ? "<<<9格内" : "9格外");
-        DebugText(dbg);
-        shown++;
-    }
-}
-// ================= 诊断块结束 =================
                 if(hasMelee||(!hasMelee&&stoneThrowerSN==-1)){
                     double bestD=1e9;
                     int bestSN=-1;
