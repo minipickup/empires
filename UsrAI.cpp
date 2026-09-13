@@ -625,7 +625,7 @@ void UsrAI::processData()
                     double score=0;
                     double dToCamp=calDistance(allOut_campDR*BLOCKSIDELENGTH,allOut_campUR*BLOCKSIDELENGTH,dr*BLOCKSIDELENGTH,ur*BLOCKSIDELENGTH)/BLOCKSIDELENGTH;
                     double dToBase=calDistance(baseBlockDR*BLOCKSIDELENGTH,baseBlockUR*BLOCKSIDELENGTH,dr*BLOCKSIDELENGTH,ur*BLOCKSIDELENGTH)/BLOCKSIDELENGTH;
-                    if(dToCamp<30||dToBase>35)continue;
+                    if(dToCamp<30||dToBase>40)continue;
                     score-=dToBase;
                     if(score>bestScore){
                         bestScore=score;
