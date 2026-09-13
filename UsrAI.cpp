@@ -625,7 +625,7 @@ void UsrAI::processData()
                     double score=0;
                     double dToCamp=calDistance(allOut_campDR*BLOCKSIDELENGTH,allOut_campUR*BLOCKSIDELENGTH,dr*BLOCKSIDELENGTH,ur*BLOCKSIDELENGTH)/BLOCKSIDELENGTH;
                     double dToBase=calDistance(baseBlockDR*BLOCKSIDELENGTH,baseBlockUR*BLOCKSIDELENGTH,dr*BLOCKSIDELENGTH,ur*BLOCKSIDELENGTH)/BLOCKSIDELENGTH;
-                    if(dToCamp<30||dToBase>40)continue;
+                    if(dToCamp<30||dToCamp>40)continue;
                     score-=dToBase;
                     if(score>bestScore){
                         bestScore=score;
@@ -634,6 +634,7 @@ void UsrAI::processData()
                     }
                 }
             }
+            if(bestDR==-1||bestUR==-1)DebugText("莫得好位置");
             return pair<int,int>{bestDR,bestUR};
         };
 
@@ -675,7 +676,6 @@ void UsrAI::processData()
                                 double d=calDistance(b.BlockDR*BLOCKSIDELENGTH,b.BlockUR*BLOCKSIDELENGTH,a.DR,a.UR)/BLOCKSIDELENGTH;
                                 if(d<3)break;
                                 HumanMove(a.SN,b.BlockDR*BLOCKSIDELENGTH,b.BlockUR*BLOCKSIDELENGTH);
-                                break;
                             }
                             //attackTower(a);
                             //HumanMove(a.SN,allOut_campDR*BLOCKSIDELENGTH,allOut_campUR*BLOCKSIDELENGTH);
