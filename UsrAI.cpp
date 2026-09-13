@@ -148,6 +148,9 @@ void UsrAI::processData()
     unordered_map<int,int>busyObject;
     set<pair<int,int>>frontier;
     bool visableBlock[100][100];
+    //unordered_map<int,int>shieldCnt;
+    int SHEILDCNT=0;
+    bool timeToWin=true;
     if (1) {
         for(int i=0;i<100;i++){
             for(int j=0;j<100;j++){
@@ -196,6 +199,23 @@ void UsrAI::processData()
         for(tagBuilding& b:info.enemy_buildings){
             if(b.Type!=BUILDING_ARROWTOWER)continue;
             if((double)b.Blood/b.MaxBlood<0.5)destroyedTower.insert(b.SN);
+        }
+        // for(tagBuilding& b:info.enemy_buildings){
+        //     if(b.Type!=BUILDING_ARROWTOWER)continue;
+        //     for(tagArmy& a:info.armies){
+        //         double d=calDistance(a.DR,a.UR,b.BlockDR*BLOCKSIDELENGTH,b.BlockUR*BLOCKSIDELENGTH);
+        //         if(d<3)shieldCnt[b.SN]++;
+        //     }
+        //     if(shieldCnt[b.SN]<4){timeToWin=false;break;}
+        // }
+        for(tagBuilding& b:info.enemy_buildings){
+            if(b.Type!=BUILDING_SIEGE)continue;
+            for(tagArmy& a:info.armies){
+                double d=calDistance(a.DR,a.UR,b.BlockDR*BLOCKSIDELENGTH,b.BlockUR*BLOCKSIDELENGTH)/BLOCKSIDELENGTH;
+                if(d<5)SHEILDCNT++;
+            }
+            if(SHEILDCNT<5)timeToWin=false;
+            break;
         }
 
         auto scanMap=[&](){
@@ -553,7 +573,6 @@ void UsrAI::processData()
                     }
                 }
             }
-            /////////////////////////////////////
             if((locked==-1||!valid)&&!danger){
                 if(hasMelee||(!hasMelee&&stoneThrowerSN==-1)){
                     double bestD=1e9;
@@ -571,11 +590,9 @@ void UsrAI::processData()
                     if(bestSN!=-1)HumanAction(army.SN,bestSN);
                 }else{
                     allOut_rangedLock[army.SN]=stoneThrowerSN;
-                    //if(army.NowState!=HUMAN_STATE_WALKING&&stoneThrowerSN!=-1)HumanAction(army.SN,stoneThrowerSN);
                     if(stoneThrowerSN!=-1)HumanAction(army.SN,stoneThrowerSN);
                 }
             }
-            /////////////////////////////////////
         };
         auto attackTower=[&](tagArmy& army){
             double bestD=1e9;
@@ -648,12 +665,19 @@ void UsrAI::processData()
                     if(info.enemy_armies.empty()){
                         if(enemyArrowTowerExist&&a.NowState!=HUMAN_STATE_ATTACKING){
                             if(a.Sort==AT_PRIEST||timer%38!=0)continue;
-                            attackTower(a);
+                            // for(tagBuilding& b:info.enemy_buildings){
+                            //     if(b.Type!=BUILDING_ARROWTOWER)continue;
+                            //     if(shieldCnt[b.SN]>=4)continue;
+                            //     HumanMove(a.SN,b.BlockDR*BLOCKSIDELENGTH,b.BlockUR*BLOCKSIDELENGTH);
+                            // }
+                            //attackTower(a);
+                            HumanMove(a.SN,allOut_campDR*BLOCKSIDELENGTH,allOut_campUR*BLOCKSIDELENGTH);
                         }else if(!enemyArrowTowerExist){
                             if(a.Sort==AT_PRIEST)continue;
                             HumanMove(a.SN,allOut_campDR*BLOCKSIDELENGTH,allOut_campUR*BLOCKSIDELENGTH);
                         }
-                        if(destroyedTower.size()>=4){
+                        //if(destroyedTower.size()>=4){
+                        if(timeToWin){
                             if(priestState==HUMAN_STATE_IDLE){
                                 HumanAction(priestSN,allOut_campSN);
                                 DebugText("敌人全灭,箭塔几乎全灭,祭司转化siege");
@@ -662,8 +686,6 @@ void UsrAI::processData()
                     }
                     else{
                         if(a.Sort==AT_PRIEST&&(meleeCnt>0||priestState==HUMAN_STATE_ATTACKING||!canConvert||info.enemy_armies.size()>5))continue;
-                        //战车弓兵的攻击间隔是1.5秒,即37.5帧
-                        //if((a.Sort==AT_CHARIOT_ARCHER||a.Sort==AT_HOPLITE)&&timer%38!=0)continue;
                         //5秒,125帧
                         if(a.Sort==AT_STONE_THROWER&&timer%133!=0)continue;
                         smartAttack(a);
