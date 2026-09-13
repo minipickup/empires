@@ -68,6 +68,7 @@ static int allOut_campDR=-1e9;
 static int allOut_campUR=-1e9;
 static int allOut_campSN=-1;
 static unordered_set<int>destroyedTower;
+static bool timeToWin=false;
 //--------------------小小功能--------------------
 int getBuildingSize(int type) {
     switch (type) {
@@ -148,9 +149,8 @@ void UsrAI::processData()
     unordered_map<int,int>busyObject;
     set<pair<int,int>>frontier;
     bool visableBlock[100][100];
-    //unordered_map<int,int>shieldCnt;
-    int SHEILDCNT=0;
-    bool timeToWin=true;
+    unordered_map<int,int>shieldCnt;
+    //int SHEILDCNT=0;
     if (1) {
         for(int i=0;i<100;i++){
             for(int j=0;j<100;j++){
@@ -200,23 +200,27 @@ void UsrAI::processData()
             if(b.Type!=BUILDING_ARROWTOWER)continue;
             if((double)b.Blood/b.MaxBlood<0.5)destroyedTower.insert(b.SN);
         }
-        // for(tagBuilding& b:info.enemy_buildings){
-        //     if(b.Type!=BUILDING_ARROWTOWER)continue;
-        //     for(tagArmy& a:info.armies){
-        //         double d=calDistance(a.DR,a.UR,b.BlockDR*BLOCKSIDELENGTH,b.BlockUR*BLOCKSIDELENGTH);
-        //         if(d<3)shieldCnt[b.SN]++;
-        //     }
-        //     if(shieldCnt[b.SN]<4){timeToWin=false;break;}
-        // }
-        for(tagBuilding& b:info.enemy_buildings){
-            if(b.Type!=BUILDING_SIEGE)continue;
-            for(tagArmy& a:info.armies){
-                double d=calDistance(a.DR,a.UR,b.BlockDR*BLOCKSIDELENGTH,b.BlockUR*BLOCKSIDELENGTH)/BLOCKSIDELENGTH;
-                if(d<5)SHEILDCNT++;
+        if(allOut_started&&!timeToWin){
+            bool OK=true;
+            for(tagBuilding& b:info.enemy_buildings){
+                if(b.Type!=BUILDING_ARROWTOWER)continue;
+                for(tagArmy& a:info.armies){
+                    double d=calDistance(a.DR,a.UR,b.BlockDR*BLOCKSIDELENGTH,b.BlockUR*BLOCKSIDELENGTH)/BLOCKSIDELENGTH;
+                    if(d<3)shieldCnt[b.SN]++;
+                }
+                if(shieldCnt[b.SN]<2){OK=false;break;}
             }
-            if(SHEILDCNT<5)timeToWin=false;
-            break;
+            if(OK)timeToWin=true;
         }
+        // for(tagBuilding& b:info.enemy_buildings){
+        //     if(b.Type!=BUILDING_SIEGE)continue;
+        //     for(tagArmy& a:info.armies){
+        //         double d=calDistance(a.DR,a.UR,b.BlockDR*BLOCKSIDELENGTH,b.BlockUR*BLOCKSIDELENGTH)/BLOCKSIDELENGTH;
+        //         if(d<5)SHEILDCNT++;
+        //     }
+        //     if(SHEILDCNT<5)timeToWin=false;
+        //     break;
+        // }
 
         auto scanMap=[&](){
             queue<pair<int,int>>q;
@@ -665,13 +669,15 @@ void UsrAI::processData()
                     if(info.enemy_armies.empty()){
                         if(enemyArrowTowerExist&&a.NowState!=HUMAN_STATE_ATTACKING){
                             if(a.Sort==AT_PRIEST||timer%38!=0)continue;
-                            // for(tagBuilding& b:info.enemy_buildings){
-                            //     if(b.Type!=BUILDING_ARROWTOWER)continue;
-                            //     if(shieldCnt[b.SN]>=4)continue;
-                            //     HumanMove(a.SN,b.BlockDR*BLOCKSIDELENGTH,b.BlockUR*BLOCKSIDELENGTH);
-                            // }
+                            for(tagBuilding& b:info.enemy_buildings){
+                                if(b.Type!=BUILDING_ARROWTOWER)continue;
+                                if(shieldCnt[b.SN]>=4)continue;
+                                double d=calDistance(b.BlockDR*BLOCKSIDELENGTH,b.BlockUR*BLOCKSIDELENGTH,a.DR,a.UR)/BLOCKSIDELENGTH;
+                                if(d<3)break;
+                                HumanMove(a.SN,b.BlockDR*BLOCKSIDELENGTH,b.BlockUR*BLOCKSIDELENGTH);
+                            }
                             //attackTower(a);
-                            HumanMove(a.SN,allOut_campDR*BLOCKSIDELENGTH,allOut_campUR*BLOCKSIDELENGTH);
+                            //HumanMove(a.SN,allOut_campDR*BLOCKSIDELENGTH,allOut_campUR*BLOCKSIDELENGTH);
                         }else if(!enemyArrowTowerExist){
                             if(a.Sort==AT_PRIEST)continue;
                             HumanMove(a.SN,allOut_campDR*BLOCKSIDELENGTH,allOut_campUR*BLOCKSIDELENGTH);
