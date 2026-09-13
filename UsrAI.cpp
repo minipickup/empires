@@ -671,10 +671,11 @@ void UsrAI::processData()
                             if(a.Sort==AT_PRIEST||timer%38!=0)continue;
                             for(tagBuilding& b:info.enemy_buildings){
                                 if(b.Type!=BUILDING_ARROWTOWER)continue;
-                                if(shieldCnt[b.SN]>=4)continue;
+                                if(shieldCnt[b.SN]>=2)continue;
                                 double d=calDistance(b.BlockDR*BLOCKSIDELENGTH,b.BlockUR*BLOCKSIDELENGTH,a.DR,a.UR)/BLOCKSIDELENGTH;
                                 if(d<3)break;
                                 HumanMove(a.SN,b.BlockDR*BLOCKSIDELENGTH,b.BlockUR*BLOCKSIDELENGTH);
+                                break;
                             }
                             //attackTower(a);
                             //HumanMove(a.SN,allOut_campDR*BLOCKSIDELENGTH,allOut_campUR*BLOCKSIDELENGTH);
