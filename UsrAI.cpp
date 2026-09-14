@@ -533,7 +533,7 @@ void UsrAI::processData()
                         bestUR=ur;
                     }
                 }
-                if(bestScore<=-10000){
+                if(bestScore<=-10000&&timer>25){
                     DebugText("太远了,回家");
                     HumanMove(priestSN,(baseBlockDR-2)*BLOCKSIDELENGTH,(baseBlockUR-2)*BLOCKSIDELENGTH);
                     needExploration=false;
