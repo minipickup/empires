@@ -188,6 +188,16 @@ void UsrAI::processData()
                 }
             }
         }
+        for (tagBuilding& building : info.enemy_buildings) {
+            int size = getBuildingSize(building.Type) + 1;
+            int dr = building.BlockDR;
+            int ur = building.BlockUR;
+            for (int i = 0; i < size; i++) {
+                for (int j = 0; j < size; j++) {
+                    curMap[dr + i][ur + j] = 2;
+                }
+            }
+        }
         auto markUnits = [&](auto& units) {
             for (auto& unit : units) {
                 curMap[unit.BlockDR][unit.BlockUR] = 3;
@@ -233,19 +243,20 @@ void UsrAI::processData()
             int bestUR=allOut_campUR-1;
             for(tagBuilding& b:info.enemy_buildings){
                 if(b.Type!=BUILDING_ARROWTOWER)continue;
-                if(armyNearTowerCnt[b.SN]>=2)continue;
+                if(armyNearTowerCnt[b.SN]>3)continue;
                 int startDR=max(b.BlockDR-1,0);
                 int startUR=max(b.BlockUR-1,0);
-                int endDR=min(b.BlockDR+3,99);
-                int endUR=min(b.BlockUR+3,99);
+                int endDR=min(b.BlockDR+2,99);
+                int endUR=min(b.BlockUR+2,99);
                 for(int dr=startDR;dr<=endDR;dr++){
                     for(int ur=startUR;ur<=endUR;ur++){
                         if(dr>=b.BlockDR&&dr<b.BlockDR+2&&
                         ur>=b.BlockUR&&ur<b.BlockUR+2)continue;
                         double score=0;
                         double dToSelf=calDistance(dr*BLOCKSIDELENGTH,ur*BLOCKSIDELENGTH,a.DR,a.UR)/BLOCKSIDELENGTH;
-                        if(armyNearTowerCnt[b.SN]>=2)score-=100;
-                        score+=dToSelf*0.1;
+                        //if(armyNearTowerCnt[b.SN]>=2)score-=100;
+                        score-=armyNearTowerCnt[b.SN]*5;
+                        score-=dToSelf*0.1;
                         if(armyCnt[{dr,ur}]>0)score-=5;
                         else score+=5-armyCnt[{dr,ur}];
                         if(score>bestScore){
@@ -277,9 +288,11 @@ void UsrAI::processData()
         
         if(!timeToWin){
             for(tagArmy& a:info.armies){
-                double d=calDistance(a.DR,a.UR,(allOut_campDR+1.5)*BLOCKSIDELENGTH,(allOut_campUR+1.5)*BLOCKSIDELENGTH)/BLOCKSIDELENGTH;
-                if(d<5)SHIELDCNT++;
-                if(SHIELDCNT>1){
+                for(tagBuilding& b:info.enemy_buildings){
+                    double d=calDistance(a.DR,a.UR,(b.BlockDR+1)*BLOCKSIDELENGTH,(b.BlockUR+1)*BLOCKSIDELENGTH)/BLOCKSIDELENGTH;
+                    if(d<5)SHIELDCNT++;
+                }
+                if(SHIELDCNT>=3){
                     timeToWin=true;
                     break;
                 }
@@ -407,10 +420,10 @@ void UsrAI::processData()
             double bestScore=-1e9;
             int bestDR=-1;
             int bestUR=-1;
-            int startDR=max(priestBlockDR-8,0);
-            int startUR=max(priestBlockUR-8,0);
-            int endDR=min(priestBlockDR+8,100);
-            int endUR=min(priestBlockUR+8,100);
+            int startDR=max(priestBlockDR-10,0);
+            int startUR=max(priestBlockUR-10,0);
+            int endDR=min(priestBlockDR+10,100);
+            int endUR=min(priestBlockUR+10,100);
             for(int dr=startDR;dr<endDR;dr++){
                 for(int ur=startUR;ur<endUR;ur++){
                     if(!reachable[dr][ur])continue;
@@ -438,6 +451,7 @@ void UsrAI::processData()
                 double bestD=1e9;
                 int bestSN=-1;
                 for(tagArmy& e:info.enemy_armies){
+                    if(e.Sort==AT_STONE_THROWER){bestSN=e.SN;break;}
                     double d=calDistance(priestDR,priestUR,e.DR,e.UR);
                     if(d<bestD){
                         bestD=d;
@@ -704,12 +718,12 @@ void UsrAI::processData()
             double bestScore=-1e9;
             double bestDR=allOut_campDR;
             double bestUR=allOut_campUR;
-            if(priestWorkObejctSN!=-1)return;
+            if(priestState==HUMAN_STATE_ATTACKING)return;
             double dToCamp=calDistance((allOut_campDR+1.5)*BLOCKSIDELENGTH,(allOut_campUR+1.5)*BLOCKSIDELENGTH,priestDR,priestUR)/BLOCKSIDELENGTH;
-            if(dToCamp<2){HumanAction(priestSN,allOut_campSN);DebugText("到位置了");}
+            if(dToCamp<4){HumanAction(priestSN,allOut_campSN);DebugText("到位置了");}
             else {
-                for(int dr=max(priestBlockDR-5,0);dr<min(priestBlockDR+5,100);dr++){
-                    for(int ur=max(priestBlockUR-5,0);ur<min(priestBlockUR+5,100);ur++){
+                for(int dr=max(priestBlockDR-3,0);dr<min(priestBlockDR+3,100);dr++){
+                    for(int ur=max(priestBlockUR-3,0);ur<min(priestBlockUR+3,100);ur++){
                         if(!reachable[dr][ur])continue;
                         double score=0;
                         for(tagBuilding& b:info.enemy_buildings){
@@ -763,7 +777,7 @@ void UsrAI::processData()
                             if(a.NowState!=HUMAN_STATE_IDLE)continue;
                             auto it=occupiedBlock.find(a.SN);
                             if(it==occupiedBlock.end())continue;
-                            HumanMove(a.SN,it->second.first*BLOCKSIDELENGTH,it->second.second*BLOCKSIDELENGTH);
+                            HumanMove(a.SN,(it->second.first+0.5)*BLOCKSIDELENGTH,(it->second.second+0.5)*BLOCKSIDELENGTH);
                         }
                         //这一else if分支已经无用了
                         else if(!enemyArrowTowerExist){
@@ -779,7 +793,7 @@ void UsrAI::processData()
                         smartAttack(a);
                     }
                 }
-                if(timeToWin){
+                if(timeToWin&&info.enemy_armies.size()==0){
                     if(priestWorkObejctSN==-1){
                         //HumanAction(priestSN,allOut_campSN);
                         convertSiege();
