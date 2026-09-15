@@ -243,7 +243,7 @@ void UsrAI::processData()
             int bestUR=allOut_campUR-1;
             for(tagBuilding& b:info.enemy_buildings){
                 if(b.Type!=BUILDING_ARROWTOWER)continue;
-                if(armyNearTowerCnt[b.SN]>3)continue;
+                if(armyNearTowerCnt[b.SN]>4)continue;
                 int startDR=max(b.BlockDR-1,0);
                 int startUR=max(b.BlockUR-1,0);
                 int endDR=min(b.BlockDR+2,99);
@@ -446,7 +446,7 @@ void UsrAI::processData()
             HumanMove(priestSN,bestDR*BLOCKSIDELENGTH,bestUR*BLOCKSIDELENGTH);
         };
         auto priestConvert=[&](){
-            if(priestWorkObejctSN!=-1)return;
+            if(priestState==HUMAN_STATE_ATTACKING)return;
             if(canConvert&&info.enemy_armies.size()!=0){
                 double bestD=1e9;
                 int bestSN=-1;
