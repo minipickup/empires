@@ -451,7 +451,7 @@ void UsrAI::processData()
                 double bestD=1e9;
                 int bestSN=-1;
                 for(tagArmy& e:info.enemy_armies){
-                    if(e.Sort==AT_STONE_THROWER){bestSN=e.SN;break;}
+                    //if(e.Sort==AT_STONE_THROWER){bestSN=e.SN;break;}
                     double d=calDistance(priestDR,priestUR,e.DR,e.UR);
                     if(d<bestD){
                         bestD=d;
@@ -722,8 +722,8 @@ void UsrAI::processData()
             double dToCamp=calDistance((allOut_campDR+1.5)*BLOCKSIDELENGTH,(allOut_campUR+1.5)*BLOCKSIDELENGTH,priestDR,priestUR)/BLOCKSIDELENGTH;
             if(dToCamp<4){HumanAction(priestSN,allOut_campSN);DebugText("到位置了");}
             else {
-                for(int dr=max(priestBlockDR-3,0);dr<min(priestBlockDR+3,100);dr++){
-                    for(int ur=max(priestBlockUR-3,0);ur<min(priestBlockUR+3,100);ur++){
+                for(int dr=max(priestBlockDR-5,0);dr<min(priestBlockDR+5,100);dr++){
+                    for(int ur=max(priestBlockUR-5,0);ur<min(priestBlockUR+5,100);ur++){
                         if(!reachable[dr][ur])continue;
                         double score=0;
                         for(tagBuilding& b:info.enemy_buildings){
@@ -798,7 +798,7 @@ void UsrAI::processData()
                         //HumanAction(priestSN,allOut_campSN);
                         convertSiege();
                     }
-                }
+                }   
             }
         }
     }
